@@ -55,10 +55,18 @@ tsasm_parser_free(p);
   recovery. `TSASM_ERR_LIMIT` (-3): a budget ran out. `TSASM_ERR_NOMEM` (-4): the allocator
   failed. After any error the parser stays usable and `*nodes` is NULL.
 - **Memory.** `tsasm_parser_set_memory_limit()` caps the bytes a parser may hold (1 GiB by
-  default). Growth is charged against the limit before it is allocated. Between parses a parser
-  keeps its buffers, and drops them at the next parse if they exceed both an eighth of the limit
-  (128 MiB by default) and 256 bytes per byte of that parse's input. `tsasm_parser_free()`
-  frees everything.
+  default). Growth is charged against the limit before it is allocated. Buffers of 128 KiB or
+  more are mapped with `mmap` (huge pages advised) and grown with `mremap`, so memory a parser
+  frees goes back to the system whatever malloc's thresholds are. `tsasm_parser_set_retain()`
+  caps what a parser keeps between parses (32 MiB by default): a parse that needed more frees
+  its working buffers before it returns, keeping only the node array it returns, and the next
+  parse frees that too. `tsasm_parser_free()` frees everything.
+- **Retention trade-off.** Freed memory comes back zeroed by the kernel when the next big parse
+  touches it. On GOROOT with 20 threads (`test/mtspeed`), 32 MiB parses at full speed with 30%
+  less peak memory than keeping every buffer; 8 MiB uses a fifth less again but parses 20-30%
+  slower, because 20 threads zeroing fresh pages share the memory bus. Inside jinter, where
+  parsing is part of the work, 8 MiB costs about 6% at 20 workers for 58% less peak memory
+  (`results/ab_retain.txt`).
 
 ### Budgets
 
@@ -143,6 +151,9 @@ original static Go-only build: about +3.1% (old 1.199–1.220 s, new 1.236–1.2
 interleaved rounds on one P-core, per-round +2.5% to +4.0%, `results/ab_single_thread_gss.txt`).
 The GSS port first cost +36%; in-place and fork fast paths, inlined shift and reduce, and inline
 merge checks brought it back. The pre-GSS figure was also +3.1% (`results/ab_single_thread.txt`).
+Freeing big parses' buffers (the 32 MiB retain default) costs another 4.1% on one thread (1.364–1.367
+s before, 1.421–1.426 s after, 6 interleaved rounds) and 1.6% at 20 threads, for 30% less peak
+memory at 20 threads (0.83–0.88 GB to 0.58–0.62 GB with the corpus, `results/ab_retain.txt`).
 
 **What limits scaling.** Measured with `scripts/scaling_pinned.sh` on the commit before the
 retention change, with the clock of the busy CPUs sampled during each run (`results/scaling.txt`):
@@ -223,8 +234,11 @@ the final library in 124 s.
   parser must parse correctly afterwards.
 - Ambiguous parameter lists no longer copy stacks: `f(a, a, …, a int)` with 100,000 identical
   names parses in 0.18 s (it returned `TSASM_ERR_LIMIT` at 400 names before the GSS port).
-- Retention: after a parse holding 705 MiB, a small parse drops the parser to 0.04 MiB, and
-  freeing it returns to the 0.02 MiB baseline.
+- Retention (resident memory): a 20 MB parse peaks at +495 MiB and returns holding only its
+  86 MiB node array; the next small parse drops the parser to +1.5 MiB and freeing it to +0.7
+  MiB. With `tsasm_parser_set_retain(p, 0)` lowering the retain frees the node array at once
+  (+0.00 MiB). On the retention build: 126/126 checks, and 20 threads for 60 s ran 3.56M parses
+  (random memory limits and random retain settings included) with 0 mismatches.
 - Threads: 20 threads for 60 s ran 5.13M parses (persistent parsers, a fresh parser per file,
   random memory limits, and mutated inputs) checked against a single-threaded reference: 0
   mismatches, 0 anomalies.

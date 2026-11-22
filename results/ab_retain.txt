@@ -1,0 +1,35 @@
+# Buffer retention (branch mem): final library (mmap for buffers >= 128 KiB, huge pages advised, retain 32 MiB) vs main 2fe4d5d. test/mtspeed go corpus/go126.txt asm <w> 5, interleaved, memory capped; 1 worker pinned to CPU 4; maxrss from /usr/bin/time includes the corpus. 2026-11-22T14:40Z
+1w old median=1.366
+1w final median=1.424
+1w old median=1.364
+1w final median=1.422
+1w old median=1.364
+1w final median=1.421
+1w old median=1.365
+1w final median=1.424
+1w old median=1.367
+1w final median=1.426
+1w old median=1.366
+1w final median=1.424
+20w old median=0.123 maxrss_kb=880776 
+20w final median=0.126 maxrss_kb=578864 
+20w old median=0.123 maxrss_kb=840056 
+20w final median=0.127 maxrss_kb=613284 
+20w old median=0.126 maxrss_kb=830604 
+20w final median=0.126 maxrss_kb=616456 
+20w old median=0.124 maxrss_kb=832156 
+20w final median=0.125 maxrss_kb=581160 
+
+# Retention sweep, 20 workers, same command (two rounds each; RETAIN_MB variants of the same code before the runtime setter)
+old    0.130 0.129 s  maxrss 821 855 MB
+8 MiB  0.158 0.182 s  maxrss 487 482 MB
+16 MiB 0.152 0.151 s  maxrss 507 501 MB
+32 MiB 0.131 0.133 s  maxrss 593 602 MB
+64 MiB 0.134 0.135 s  maxrss 798 803 MB
+retain max(8 MiB, 64/128/256 bytes per input byte), decided at the next parse: 0.144-0.156 s, 459-556 MB (no better than a flat 32 MiB)
+
+# jinter chunk.Split (jinterbench, go1.26.5 src 90.3 MB, go/tsasm config, 3 passes, 3 alternating rounds), MB/s and peak RSS above the loaded corpus
+old library        1 worker 39.7 41.0 43.3   20 workers 322.3 322.5 325.7  rss+ 1672 1847 1785 MB
+new, default 32MiB 1 worker 38.6 38.8 41.9   20 workers 324.6 324.6 332.1  rss+ 1320 1358 1348 MB
+new, retain 8 MiB  1 worker 37.0 37.2 38.8   20 workers 300.6 301.5 324.8  rss+  768  724  735 MB
+Where the old 1.7 GB went (env experiments on the old library): trimming buffers after big parses 1.09-1.28 GB; plus MALLOC_MMAP_THRESHOLD_=131072 0.59-0.65 GB; the threshold alone 1.64-1.73 GB. The Go heap peaks at 381 MB (93 MB live corpus).

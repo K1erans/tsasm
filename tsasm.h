@@ -23,11 +23,17 @@ TsasmParser *tsasm_parser_new(void);
 void tsasm_parser_free(TsasmParser *p);
 // Caps the bytes the parser may hold: parse buffers plus the output array. A parse that would
 // exceed it returns TSASM_ERR_LIMIT. Buffers kept from earlier parses count, so lowering the
-// limit below current use frees them, including the node array of the last parse. Between parses a parser keeps its buffers, and drops them
-// at the next parse if they exceed both an eighth of the limit (128 MiB by default) and 256 bytes
-// per byte of that parse's input.
+// limit below current use frees them, including the node array of the last parse.
 void tsasm_parser_set_memory_limit(TsasmParser *p, uint64_t bytes);
 #define TSASM_DEFAULT_MEMORY_LIMIT (1ull << 30)
+// Caps the bytes of buffers a parser keeps between parses (TSASM_DEFAULT_RETAIN to start). A parse
+// that needed more frees its working buffers before it returns, keeping only the node array it
+// returns, and the next parse frees that too. Kept buffers make the next big parse faster; freed
+// ones come back zeroed by the kernel. Many threads parsing big files: 32 MiB costs no speed, 8 MiB
+// uses about a fifth less peak memory but parses 20-30% slower. Lowering it below current use frees
+// the buffers now, including the node array of the last parse.
+void tsasm_parser_set_retain(TsasmParser *p, uint64_t bytes);
+#define TSASM_DEFAULT_RETAIN (32ull << 20)
 
 // Parses src with lang. On success returns the node count and sets *nodes to the tree's VISIBLE nodes
 // (named and anonymous, as C tree-sitter's ts_node_child walk shows them) in pre-order; parent is

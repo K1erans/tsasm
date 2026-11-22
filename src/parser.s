@@ -2,7 +2,7 @@
 #
 # Exports (System V AMD64):
 #   TsasmParser *tsasm_parser_new(void), void tsasm_parser_free(TsasmParser *),
-#   void tsasm_parser_set_memory_limit(TsasmParser *, uint64_t)
+#   void tsasm_parser_set_memory_limit(TsasmParser *, uint64_t), void tsasm_parser_set_retain(TsasmParser *, uint64_t)
 #   int64_t tsasm_parse(TsasmParser *p, const TsasmLanguage *lang, const uint8_t *src, uint64_t len,
 #                       const TsasmNode **nodes)
 #   const char *tsasm_language_symbol_name(const TsasmLanguage *, uint16_t),
@@ -75,6 +75,7 @@
 	.set C_SLK, 400                     # slices' subtrees, bottom first (u32 tree)
 	.set C_NSLK, 408
 	.set C_SLKCAP, 412
+	.set C_RETAIN, 416                  # u64 bytes of buffers kept between parses
 	.set C_ITERS, 448                   # pop iterators: u32 stack node, u32 count, u32 cell, pad
 	.set MAXITERS, 64                   # C's MAX_ITERATOR_COUNT
 	.set C_SIZE, C_ITERS + MAXITERS * 16
@@ -102,8 +103,14 @@
 	.set ERR_LIMIT, -3
 	.set ERR_NOMEM, -4
 	.set DEFAULT_MEMLIMIT, 1 << 30
-	.set RETAIN_LIMIT_SHIFT, 3          # an eighth of the memory limit
-	.set RETAIN_SHIFT, 8                # 256 bytes of buffers per input byte
+# Between parses a parser keeps at most C_RETAIN bytes of buffers (tsasm_parser_set_retain): a
+# parse that grew more gives its working buffers back before it returns. Memory handed back is
+# zeroed by the kernel when the next big parse faults it in, which is the cost of a low setting.
+# GOROOT, 20 threads (test/mtspeed): 32 MiB keeps full speed with 30% less peak memory than
+# keeping everything; 8 MiB saves 45% but parses 20-30% slower while threads share the memory bus.
+	.set DEFAULT_RETAIN, 32 << 20
+	.set MAP_MIN, 128 << 10             # buffers this big are mmapped (huge pages advised), so
+	                                    # freeing them returns memory whatever malloc's thresholds
 
 	.set MAXLINKS, 8                    # C's MAX_LINK_COUNT
 	.set MAXVERSIONS, 6                 # C's MAX_VERSION_COUNT
@@ -195,20 +202,63 @@ p_grow:
 	add rax, qword ptr [r15+C_MEMUSED]
 	cmp rax, qword ptr [r15+C_MEMLIMIT]
 	ja p_limit
-	push rdx
-	push rax
-	push r8
-	push r8
-	mov esi, edx
-	imul rsi, rcx
+	mov r10d, r9d
+	imul r10, rcx                       # old bytes
+	mov r11d, edx
+	imul r11, rcx                       # new bytes
+	sub rsp, 48                         # [0] capacity, [8] usage, [16] buffer, [24] old bytes, [40] new pointer
+	mov qword ptr [rsp], rdx
+	mov qword ptr [rsp+8], rax
+	mov qword ptr [rsp+16], r8
+	mov qword ptr [rsp+24], r10
+	mov qword ptr [rsp+32], r11
 	mov rdi, qword ptr [r8]
+	cmp r11, MAP_MIN                    # small: malloc's heap
+	jae 3f
+	mov rsi, r11
 	call realloc@PLT
-	pop r8
-	pop r8
-	pop rcx
-	pop rdx
 	test rax, rax
 	jz p_oom
+	jmp 5f
+3:	cmp r10, MAP_MIN                    # already mapped: grow the mapping
+	jb 4f
+	mov rsi, r10
+	mov rdx, r11
+	mov ecx, 1                          # MREMAP_MAYMOVE
+	xor eax, eax                        # variadic
+	call mremap@PLT
+	cmp rax, -1
+	je p_oom
+	jmp 5f
+4:	xor edi, edi                        # crossing MAP_MIN: map, copy, free the heap block
+	mov rsi, r11
+	mov edx, 3                          # PROT_READ | PROT_WRITE
+	mov ecx, 0x22                       # MAP_PRIVATE | MAP_ANONYMOUS
+	mov r8, -1
+	xor r9d, r9d
+	call mmap@PLT
+	cmp rax, -1
+	je p_oom
+	mov qword ptr [rsp+40], rax
+	mov rdi, rax                        # huge pages: fewer faults when a big parse touches
+	mov rsi, qword ptr [rsp+32]         # fresh memory; the flag follows the mapping through
+	mov edx, 14                         # mremap (MADV_HUGEPAGE; failure is harmless)
+	call madvise@PLT
+	mov rax, qword ptr [rsp+40]
+	mov rdx, qword ptr [rsp+24]
+	test rdx, rdx
+	jz 6f
+	mov rdi, rax
+	mov r8, qword ptr [rsp+16]
+	mov rsi, qword ptr [r8]
+	call memcpy@PLT
+6:	mov r8, qword ptr [rsp+16]
+	mov rdi, qword ptr [r8]
+	call free@PLT
+	mov rax, qword ptr [rsp+40]
+5:	mov r8, qword ptr [rsp+16]
+	mov rdx, qword ptr [rsp]
+	mov rcx, qword ptr [rsp+8]
 	mov qword ptr [r8], rax
 	mov dword ptr [r8+12], edx
 	mov qword ptr [r15+C_MEMUSED], rcx
@@ -282,15 +332,47 @@ p_oom:
 	jmp .Lmain_ret
 
 
-# p_release: free every buffer the context owns and zero their capacities (r15 = ctx).
-p_release:
-	.irp off, C_NODES, C_KIDS, C_ESTK, C_OUT, C_SN, C_XB, C_HEADS, C_SLICES, C_CELLS, C_SLK
+# RELEASE off, size: free buffer off (entries of size bytes) and zero it. Stack aligned.
+.macro RELEASE off, size
 	mov rdi, qword ptr [r15+\off]
-	call free@PLT
+	mov esi, dword ptr [r15+\off+12]
+	imul rsi, rsi, \size
+	call p_free_buf
 	mov qword ptr [r15+\off], 0
 	mov dword ptr [r15+\off+12], 0
-	.endr
+.endm
+
+# p_free_buf(rdi = pointer, rsi = capacity in bytes): munmap or free, as p_grow allocated it.
+p_free_buf:
+	cmp rsi, MAP_MIN
+	jae munmap@PLT
+	jmp free@PLT
+
+# p_release_work: free every buffer but the output array; usage drops to the output's (r15 = ctx).
+p_release_work:
+	push rbx
+	RELEASE C_NODES, 32
+	RELEASE C_KIDS, 4
+	RELEASE C_ESTK, 16
+	RELEASE C_SN, SN_SIZE
+	RELEASE C_XB, XB_SIZE
+	RELEASE C_HEADS, 8
+	RELEASE C_SLICES, 16
+	RELEASE C_CELLS, 8
+	RELEASE C_SLK, 4
+	mov eax, dword ptr [r15+C_OUTCAP]
+	shl rax, 4
+	mov qword ptr [r15+C_MEMUSED], rax
+	pop rbx
+	ret
+
+# p_release: free every buffer the context owns and zero their capacities (r15 = ctx).
+p_release:
+	push rbx
+	call p_release_work
+	RELEASE C_OUT, 16
 	mov qword ptr [r15+C_MEMUSED], 0
+	pop rbx
 	ret
 
 # ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
@@ -2835,12 +2917,7 @@ tsasm_parse:
 	.endr
 	mov rsi, rdx
 	mov rdx, rcx
-	mov rax, rdx                        # keep buffers up to max(limit / 8, 256 * len): a big input
-	shl rax, RETAIN_SHIFT               # reuses what the last big input grew, and a small one
-	mov r8, qword ptr [r15+C_MEMLIMIT]  # drops it (a wrapped shift only frees early)
-	shr r8, RETAIN_LIMIT_SHIFT
-	cmp rax, r8
-	cmovb rax, r8
+	mov rax, qword ptr [r15+C_RETAIN]   # drop the last parse's big output array
 	cmp qword ptr [r15+C_MEMUSED], rax
 	jbe 1f
 	push rsi
@@ -3001,6 +3078,19 @@ tsasm_parse:
 	jmp .Lmain_ret
 1:	call p_emit
 .Lmain_ret:
+	mov rcx, qword ptr [r15+C_RETAIN]   # a big parse gives its buffers back now,
+	cmp qword ptr [r15+C_MEMUSED], rcx  # keeping only the nodes it returns
+	jbe 3f
+	push rax
+	push rax
+	test rax, rax
+	js 4f
+	call p_release_work
+	jmp 5f
+4:	call p_release
+5:	pop rax
+	pop rax
+3:
 	mov rcx, qword ptr [r15+C_RESULT]
 	test rcx, rcx
 	jz 2f
@@ -3037,6 +3127,7 @@ tsasm_parser_new:
 	rep stosb
 	mov rax, rbx
 	mov qword ptr [rax+C_MEMLIMIT], DEFAULT_MEMLIMIT
+	mov qword ptr [rax+C_RETAIN], DEFAULT_RETAIN
 1:	pop rbx
 	ret
 	.size tsasm_parser_new, .-tsasm_parser_new
@@ -3069,6 +3160,20 @@ tsasm_parser_set_memory_limit:
 	pop r15
 1:	ret
 	.size tsasm_parser_set_memory_limit, .-tsasm_parser_set_memory_limit
+
+# void tsasm_parser_set_retain(TsasmParser *p, uint64_t bytes)
+	.globl tsasm_parser_set_retain
+	.type tsasm_parser_set_retain, @function
+tsasm_parser_set_retain:
+	mov qword ptr [rdi+C_RETAIN], rsi
+	cmp qword ptr [rdi+C_MEMUSED], rsi
+	jbe 1f
+	push r15
+	mov r15, rdi
+	call p_release
+	pop r15
+1:	ret
+	.size tsasm_parser_set_retain, .-tsasm_parser_set_retain
 
 # const char *tsasm_language_symbol_name(const TsasmLanguage *lang, uint16_t symbol)
 	.globl tsasm_language_symbol_name

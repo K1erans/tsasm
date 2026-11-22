@@ -16,16 +16,16 @@
 //     are also parsed by C tree-sitter (build/libref.a) to confirm the expected class. A -3 at
 //     the default limit is re-run with a 6 GiB limit, which must give the expected class
 //     (inputs >= 8 MB may stay -3); GLR-heavy families may return -3 at any limit.
-//  2. Retention: after a parse that needs hundreds of MB, then a small parse, malloc in-use
-//     bytes (mallinfo2 uordblks + hblkhd) fall back below baseline + 128 MiB + 4 MiB (an eighth
-//     of the default memory limit, the retention cap in tsasm.h).
+//  2. Retention (resident memory, /proc/self; each case runs in its own process): a parse that
+//     needs hundreds of MB peaks that high, gives its working buffers back before returning
+//     (only the returned node array stays), and the next small parse drops the node array too, so
+//     usage falls to baseline + TSASM_DEFAULT_RETAIN; again with tsasm_parser_set_retain(p, 0).
 //  3. Threads: a single-threaded reference (hash of the node array, or the error code) for
 //     every file in the list, then N threads for S seconds checking every parse against it,
 //     with roles: persistent parser, parser per file, random memory limits, and random
 //     mutations followed by a valid file on the same parser.
 #define _GNU_SOURCE
 #include <errno.h>
-#include <malloc.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -81,7 +81,20 @@ static const char *cls_str(int m) {
 static void got_str(char *b, size_t n, int64_t r) {
   if (r >= 0) snprintf(b, n, "acc %ld", (long)r); else snprintf(b, n, "%ld", (long)r);
 }
-static double inuse_bytes(void) { struct mallinfo2 m = mallinfo2(); return (double)m.uordblks + (double)m.hblkhd; }
+// Resident bytes, and the peak since the last reset_peak (tsasm mmaps big buffers itself, which
+// malloc statistics do not see).
+static double rss_bytes(void) {
+  long pages = 0; FILE *f = fopen("/proc/self/statm", "r");
+  if (f) { if (fscanf(f, "%*s %ld", &pages) != 1) pages = 0; fclose(f); }
+  return (double)pages * sysconf(_SC_PAGESIZE);
+}
+static void reset_peak(void) { FILE *f = fopen("/proc/self/clear_refs", "w"); if (f) { fputs("5", f); fclose(f); } }
+static double peak_bytes(void) {
+  char l[256]; long kb = 0; FILE *f = fopen("/proc/self/status", "r");
+  while (f && fgets(l, sizeof l, f)) sscanf(l, "VmHWM: %ld kB", &kb);
+  if (f) fclose(f);
+  return kb * 1024.0;
+}
 
 // ---- input buffers: mmap-backed, so inputs never show up in malloc statistics ----
 typedef struct { uint8_t *p; size_t len, cap; } Buf;
@@ -432,25 +445,46 @@ static void *run_retain(void *arg) {
   Ctx *x = arg; Res *res = x->res;
   Buf body = {0}; if (huge_body(&body)) { fail(res, "cannot read %s", huge_src); return NULL; }
   Buf big = {0}, small = {0};
-  huge_input(&big, &body, (20000000 + body.len - 1) / body.len); // ~550 MB RSS, under 1 GiB huge_input(&small, &body, 1);
+  huge_input(&big, &body, (20000000 + body.len - 1) / body.len); // ~550 MB RSS, under 1 GiB
+  huge_input(&small, &body, 1);
   res->bytes = big.len;
-  double base = inuse_bytes();
   TsasmParser *p = tsasm_parser_new(); const TsasmNode *nodes;
+  double base = rss_bytes();
+  reset_peak();
   int64_t r = timed_parse(res, p, big.p, big.len, &nodes);
-  double after_big = inuse_bytes();
+  double peak = peak_bytes(), after_big = rss_bytes(), out = r > 0 ? r * (double)sizeof(TsasmNode) : 0;
   int64_t r2 = timed_parse(res, p, small.p, small.len, &nodes);
-  double after_small = inuse_bytes();
+  double after_small = rss_bytes();
   tsasm_parser_free(p);
-  double after_free = inuse_bytes();
+  double after_free = rss_bytes();
   res->got = r;
-  double limit = TSASM_DEFAULT_MEMORY_LIMIT / 8 + 4 * MiB;
-  printf("  retention: baseline %.2f MiB, after %.0f MB parse %.1f MiB, after small parse %.2f MiB (limit baseline+132), after free %.2f MiB\n",
-         base / MiB, big.len / 1e6, after_big / MiB, after_small / MiB, after_free / MiB);
+  double slack = 4 * MiB; // malloc's own free lists keep small blocks resident
+  printf("  retention (resident): baseline %.2f MiB, peak in %.0f MB parse +%.0f MiB, after it +%.1f MiB "
+         "(its %.1f MiB of nodes), after small parse +%.2f MiB, after free +%.2f MiB\n",
+         base / MiB, big.len / 1e6, (peak - base) / MiB, (after_big - base) / MiB, out / MiB,
+         (after_small - base) / MiB, (after_free - base) / MiB);
   if (r <= 0 || r2 <= 0) { res->pass = 0; note(res, "parses failed: %ld %ld", (long)r, (long)r2); }
-  if (after_big - base < 200 * MiB) { res->pass = 0; note(res, "big parse used only %.0f MiB, not a test", (after_big - base) / MiB); }
-  if (after_small - base > limit) { res->pass = 0; note(res, "RETAINED %.1f MiB after the small parse", (after_small - base) / MiB); }
-  if (after_free - base > 1 * MiB) { res->pass = 0; note(res, "LEAK %.1f MiB after free", (after_free - base) / MiB); }
-  note(res, "in-use MiB: base %.2f, big %.0f, small %.2f, freed %.2f", base / MiB, after_big / MiB, after_small / MiB, after_free / MiB);
+  if (peak - base < 200 * MiB) { res->pass = 0; note(res, "big parse peaked at only %.0f MiB, not a test", (peak - base) / MiB); }
+  if (after_big - base > out + TSASM_DEFAULT_RETAIN + slack) { res->pass = 0; note(res, "KEPT %.1f MiB after the big parse beyond its nodes", (after_big - base - out) / MiB); }
+  if (after_small - base > TSASM_DEFAULT_RETAIN + slack) { res->pass = 0; note(res, "RETAINED %.1f MiB after the small parse", (after_small - base) / MiB); }
+  if (after_free - base > slack) { res->pass = 0; note(res, "LEAK %.1f MiB after free", (after_free - base) / MiB); }
+  note(res, "resident MiB over base: peak %.0f, after big %.1f (nodes %.1f), small %.2f, freed %.2f",
+       (peak - base) / MiB, (after_big - base) / MiB, out / MiB, (after_small - base) / MiB, (after_free - base) / MiB);
+  // retain 0: lowering it frees the kept node array at once, and every parse keeps nothing
+  TsasmParser *q = tsasm_parser_new();
+  double qbase = rss_bytes();
+  int64_t r3 = timed_parse(res, q, big.p, big.len, &nodes);
+  double q_big = rss_bytes();
+  tsasm_parser_set_retain(q, 0);
+  double q_lowered = rss_bytes();
+  int64_t r4 = timed_parse(res, q, small.p, small.len, &nodes);
+  double q_small = rss_bytes();
+  tsasm_parser_free(q);
+  printf("  retain 0: after big parse +%.1f MiB, after set_retain(0) +%.2f MiB, after small parse +%.2f MiB\n",
+         (q_big - qbase) / MiB, (q_lowered - qbase) / MiB, (q_small - qbase) / MiB);
+  if (r3 != r || r4 != r2) { res->pass = 0; note(res, "second parser gave %ld %ld, want %ld %ld", (long)r3, (long)r4, (long)r, (long)r2); }
+  if (q_lowered - qbase > slack) { res->pass = 0; note(res, "set_retain(0) left %.1f MiB", (q_lowered - qbase) / MiB); }
+  if (q_small - qbase > slack) { res->pass = 0; note(res, "retain 0 kept %.1f MiB after a small parse", (q_small - qbase) / MiB); }
   bfree(&body); bfree(&big); bfree(&small);
   x->expect = E_ACC;
   return NULL;
@@ -549,6 +583,7 @@ static void *mt_worker(void *arg) {
     case R_KEEP:
       begin_op(t, role, f, 0, TSASM_DEFAULT_MEMORY_LIMIT);
       tsasm_parser_set_memory_limit(p, TSASM_DEFAULT_MEMORY_LIMIT);
+      tsasm_parser_set_retain(p, TSASM_DEFAULT_RETAIN);
       r = tsasm_parse(p, GO, F[f].p, F[f].len, &n);
       if (!matches(f, r, n)) mismatch(t, role, f, r, TSASM_DEFAULT_MEMORY_LIMIT, 0, 0, "");
       break;
@@ -564,6 +599,8 @@ static void *mt_worker(void *arg) {
       if (lim > 1 << 20 && lim < TSASM_DEFAULT_MEMORY_LIMIT) lim += splitmix(&rng) % lim; // vary within the band
       begin_op(t, role, f, 0, lim);
       tsasm_parser_set_memory_limit(p, lim);
+      static const uint64_t RETAINS[] = {0, 4096, 1 << 20, 8 << 20, TSASM_DEFAULT_RETAIN, 1ull << 40};
+      tsasm_parser_set_retain(p, RETAINS[splitmix(&rng) % (sizeof RETAINS / sizeof *RETAINS)]);
       r = tsasm_parse(p, GO, F[f].p, F[f].len, &n);
       if (r == TSASM_ERR_LIMIT && r != F[f].code) {
         if (lim < TSASM_DEFAULT_MEMORY_LIMIT) t->limited++; else mismatch(t, role, f, r, lim, 0, 0, "-3 at a limit >= default");
