@@ -133,7 +133,10 @@ P-core.
 | 20 | 93.0 MB/s | 752.1 MB/s | 8.1× |
 
 C's column is parse only. tsasm's includes emitting the flat node array; bench copies it into
-a Go slice on top. On this corpus tsasm and C both accept 7654 files; parity is 100% (7654 / 7654). gotreesitter v0.58.0 in the same harness (measured earlier, 00:15): 1.0, 2.6, 2.4 and 2.5 MB/s, parity 92.54%.
+a Go slice on top. On this corpus tsasm and C both accept 7654 files; parity is 100% (7654 / 7654). gotreesitter v0.58.0 in the same harness (12:38, same session as C): 1.0, 2.7, 2.2 and 2.3 MB/s;
+with a local patch that replaces its `runtime.ReadMemStats` calls (which pause every goroutine)
+with `runtime/metrics` (12:52, `bench/gts_perf.md`): 1.0, 5.9, 8.3 and 9.6 MB/s. Parity 92.54%
+either way. Against the patched build tsasm is 68–78× faster at every worker count.
 
 Single-thread cost of the reentrant, multi-grammar, graph-structured-stack runtime against the
 original static Go-only build: about +3.1% (old 1.199–1.220 s, new 1.236–1.260 s per pass, 6
