@@ -172,7 +172,21 @@ five ways:
 4. a low memory limit gives `TSASM_ERR_LIMIT` or the same tree;
 5. tsasm never accepts what C tree-sitter rejects.
 
-<!-- FUZZTABLE -->
+Four rounds on 2026-11-22, 8 jobs each (4 grammars × 2 guard modes), fork mode, inputs up to
+8 KiB, 20 s timeout, memory capped:
+
+| round | code | wall time | executions | findings |
+|---|---|---:|---:|---|
+| 1 | first harness build | 57 min | about 600,000 | 2 real bugs, 1 harness bug |
+| 2 | after the round 1 fixes | 54 min | 2,663,018 | none |
+| 3 | after the speed work | 16 min | 902,519 | none |
+| 4 | final library | 150 min | 9,589,679 | none |
+| total | | 4.6 h (37 job-hours) | about 13.8 million | |
+
+Rounds 2 and 3 were stopped early so the next round would fuzz the code that ships. Each restart
+replayed the whole accumulated corpus (about 5,000 C, 2,000 Go, 2,000 Java and 630 JSON inputs)
+through the new binaries in both guard modes first, with no failures. Final coverage:
+14,680 counters hit in C, 7,753 in Java, 6,740 in Go and 1,637 in JSON.
 
 Round 1 found two real bugs, both fixed and kept in `fuzz/regress/` (`make fuzz-regress`
 replays them in both guard modes):
