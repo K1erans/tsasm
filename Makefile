@@ -14,7 +14,7 @@ build/lang_%.s: gen/gen.py $$(GRAMMAR_$$*)
 	@mkdir -p build
 	python3 gen/gen.py $(GRAMMAR_$*) $* build
 
-build/%.o: build/%.s
+$(GRAMMARS:%=build/lang_%.o): build/%.o: build/%.s
 	$(AS) -o $@ $<
 
 build/parser.o: src/parser.s
@@ -70,3 +70,32 @@ check: tools
 stress stress-smoke:
 	$(MAKE) -f test/stress.mk $@
 .PHONY: stress stress-smoke
+
+# ---- fuzzing: one libFuzzer binary per grammar, build/fuzz/<lang> ----
+# The asm gets libFuzzer coverage counters and the guard-page allocator (scripts/covinstr.py);
+# the harness and the C reference build with ASan. libFuzzer comes from LLVM's compiler-rt.
+FUZZER_RT ?= $(firstword $(wildcard /usr/lib/llvm-*/lib/clang/*/lib/linux/libclang_rt.fuzzer-x86_64.a))
+FUZZCC := gcc -O1 -g -fsanitize=address -fno-omit-frame-pointer -I$(TS_RUNTIME)/include
+build/fuzz/parser.o: src/parser.s scripts/covinstr.py
+	@mkdir -p build/fuzz
+	python3 scripts/covinstr.py parser src/parser.s build/fuzz/parser.s
+	$(AS) -o $@ build/fuzz/parser.s
+$(GRAMMARS:%=build/fuzz/lang_%.o): build/fuzz/lang_%.o: build/lang_%.s scripts/covinstr.py
+	@mkdir -p build/fuzz
+	python3 scripts/covinstr.py lang_$* build/lang_$*.s build/fuzz/lang_$*.s
+	$(AS) -o $@ build/fuzz/lang_$*.s
+build/fuzz/guard.o: fuzz/guard.c fuzz/guard.h
+	@mkdir -p build/fuzz
+	$(FUZZCC) -c fuzz/guard.c -o $@
+build/fuzz/ref.o: test/ref.c test/langs.h tsasm.h
+	@mkdir -p build/fuzz
+	$(FUZZCC) -c test/ref.c -o $@
+FUZZOBJS := build/fuzz/parser.o $(GRAMMARS:%=build/fuzz/lang_%.o) build/fuzz/guard.o build/fuzz/ref.o
+$(GRAMMARS:%=build/fuzz/%): build/fuzz/%: fuzz/target.c test/langs.h tsasm.h $(FUZZOBJS) build/ts_lib.o $(GRAMMARS:%=build/ts_%.o)
+	$(FUZZCC) -DFUZZ_LANG=$* -c fuzz/target.c -o build/fuzz/target_$*.o
+	g++ -fsanitize=address -o $@ build/fuzz/target_$*.o $(FUZZOBJS) build/ts_lib.o $(GRAMMARS:%=build/ts_%.o) $(FUZZER_RT) -lpthread
+fuzz: $(GRAMMARS:%=build/fuzz/%)
+# Replays every saved finding (fuzz/regress/<lang>/) once in both guard modes; fails on any.
+fuzz-regress: fuzz
+	sh scripts/fuzz_regress.sh
+.PHONY: fuzz fuzz-regress

@@ -1,0 +1,29 @@
+#ifn;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;def __eglplatform_h_
+#define ¡Ÿeglplatform_h_
+
+/*
+** Copyright 2007-2020 The Khronos Group Inc.
+** SPDX-License-Identifier: Apache-2.0
+./
+
+/* Platform-specific types and defin.itions for egl.h
+ *
+ * Adopters may modify khrplatform.h and this file to suit their platform.
+ * You are encouraged to submit all modifications to the Khronos group so that
+ * they can be included in future versions of this f¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡¡/
+
+#include <KHR/khrplatform.h>
+
+/* Macros used in EGL functAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAion prototype declarations.
+ *
+ * EGL fint;
+
+
+/* C++ / C tyÿÿÿÿÿÿÿÿacros for special EGL handle values */
+#if defined(__cplusplus)
+#define EGL_CAST(type, value) (static_cast<type>(value))
+#else
+#define EGL_CAST(type, value) ((type) (value))
+#endif
+
+#endif /* __eglplatform_h */

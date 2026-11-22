@@ -306,7 +306,10 @@ p_lex:
 	je .Llex_fail
 	sub r10, r12
 	sub r11, r12
-	mov dword ptr [r15+C_TSTART], r10d
+	cmp r11, r10                        # a token accepted before skipped whitespace starts where
+	jae 1f                              # it ends, as in ts_lexer_finish
+	mov r10, r11
+1:	mov dword ptr [r15+C_TSTART], r10d
 	mov dword ptr [r15+C_TEND], r11d
 	mov dword ptr [r15+C_TKW], 0
 	cmp ecx, dword ptr [r15+C_LANG+L_WORD]

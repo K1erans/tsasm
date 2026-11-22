@@ -442,7 +442,7 @@ def gen_cond(e, T, F, pre):
         L('\tjmp %s' % F)
         L('%s:' % slow)
         L('\tlea r8, [rip + tsl_set_%s]' % e[1])
-        L('\tmov ecx, %d' % len(charsets[e[1]]))
+        L('\tmov edi, %d' % len(charsets[e[1]]))
         L('\tcall tsl_set_contains')
         L('\ttest r8d, r8d')
         L('\tjnz %s' % T)
@@ -700,12 +700,13 @@ tsl_decode_utf8:
 	mov edx, 1
 	ret
 
-# binary search set_contains: r8 = ranges (pairs of int32), ecx = count, eax = lookahead
-# out: r8d = 1/0.  clobbers rcx, rdx? no: preserves rdx, rsi, rax
+# binary search set_contains: r8 = ranges (pairs of int32), edi = count, eax = lookahead
+# out: r8d = 1/0.  clobbers rdi; preserves ecx (the accepted symbol), rdx, rsi, rax
 tsl_set_contains:
 	push rdx
 	push rbx
-	push rdi
+	push rcx
+	mov ecx, edi
 	xor edx, edx            # index
 .Lsc_loop:
 	cmp ecx, 1
@@ -728,13 +729,13 @@ tsl_set_contains:
 	jg .Lsc_no
 .Lsc_yes:
 	mov r8d, 1
-	pop rdi
+	pop rcx
 	pop rbx
 	pop rdx
 	ret
 .Lsc_no:
 	xor r8d, r8d
-	pop rdi
+	pop rcx
 	pop rbx
 	pop rdx
 	ret

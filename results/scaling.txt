@@ -1,0 +1,63 @@
+# scaling, go1.26.5 src, unpinned (1 worker on CPU 4)
+asm workers=1 files=7710 bytes=90.3MB
+  warm 1.283s 70.4 MB/s accepted=7653 nodes=27151858
+RESULT asm workers=1 median=1.276s MB/s=70.8 min=1.267 max=1.290 runs=5
+  load1=0.43 meanMHz P=991 E=1803
+c workers=1 files=7710 bytes=90.3MB
+  warm 10.423s 8.7 MB/s accepted=7654 nodes=0
+RESULT c workers=1 median=10.390s MB/s=8.7 min=9.866 max=10.407 runs=5
+  load1=0.48 meanMHz P=969 E=1875
+asm workers=6 files=7710 bytes=90.3MB
+  warm 0.237s 381.1 MB/s accepted=7653 nodes=27151858
+RESULT asm workers=6 median=0.223s MB/s=405.7 min=0.221 max=0.225 runs=5
+  load1=1.02 meanMHz P=2147 E=1893
+c workers=6 files=7710 bytes=90.3MB
+  warm 1.724s 52.4 MB/s accepted=7654 nodes=0
+RESULT c workers=6 median=1.681s MB/s=53.7 min=1.676 max=1.693 runs=5
+  load1=1.02 meanMHz P=2448 E=2040
+asm workers=12 files=7710 bytes=90.3MB
+  warm 0.164s 549.2 MB/s accepted=7653 nodes=27151858
+RESULT asm workers=12 median=0.149s MB/s=605.2 min=0.147 max=0.154 runs=5
+  load1=1.93 meanMHz P=2659 E=2565
+c workers=12 files=7710 bytes=90.3MB
+  warm 1.109s 81.4 MB/s accepted=7654 nodes=0
+RESULT c workers=12 median=1.078s MB/s=83.8 min=1.073 max=1.086 runs=5
+  load1=1.93 meanMHz P=3540 E=2649
+asm workers=20 files=7710 bytes=90.3MB
+  warm 0.126s 715.8 MB/s accepted=7653 nodes=27151858
+RESULT asm workers=20 median=0.119s MB/s=758.1 min=0.118 max=0.121 runs=5
+  load1=3.48 meanMHz P=3022 E=2560
+c workers=20 files=7710 bytes=90.3MB
+  warm 0.941s 96.0 MB/s accepted=7654 nodes=0
+RESULT c workers=20 median=0.892s MB/s=101.2 min=0.885 max=0.899 runs=5
+  load1=3.48 meanMHz P=3648 E=2616
+
+# pinned layouts, clock of the busy CPUs
+RESULT asm workers=1 median=1.287s MB/s=70.2 min=1.264 max=1.294 runs=5 spec=1@4 meanMHz=3762 load1=2.84
+RESULT c workers=1 median=10.391s MB/s=8.7 min=9.852 max=10.394 runs=5 spec=1@4 meanMHz=3749 load1=1.90
+RESULT asm workers=6 median=0.221s MB/s=409.4 min=0.218 max=0.222 runs=5 spec=6@0,2,4,6,8,10 meanMHz=3374 load1=1.90
+RESULT c workers=6 median=1.685s MB/s=53.6 min=1.677 max=1.702 runs=5 spec=6@0,2,4,6,8,10 meanMHz=3717 load1=2.53
+RESULT asm workers=6 median=0.320s MB/s=282.0 min=0.318 max=0.321 runs=5 spec=6@0,1,2,3,4,5 meanMHz=3527 load1=2.53
+RESULT c workers=6 median=2.853s MB/s=31.7 min=2.850 max=2.855 runs=5 spec=6@0,1,2,3,4,5 meanMHz=3757 load1=3.59
+RESULT asm workers=12 median=0.166s MB/s=545.0 min=0.164 max=0.167 runs=5 spec=12@0,1,2,3,4,5,6,7,8,9,10,11 meanMHz=3288 load1=3.59
+RESULT c workers=12 median=1.434s MB/s=63.0 min=1.431 max=1.436 runs=5 spec=12@0,1,2,3,4,5,6,7,8,9,10,11 meanMHz=3706 load1=4.96
+RESULT asm workers=8 median=0.308s MB/s=293.1 min=0.305 max=0.309 runs=5 spec=8@12,13,14,15,16,17,18,19 meanMHz=2575 load1=4.96
+RESULT c workers=8 median=2.166s MB/s=41.7 min=2.161 max=2.172 runs=5 spec=8@12,13,14,15,16,17,18,19 meanMHz=2675 load1=5.64
+RESULT asm workers=1 median=2.254s MB/s=40.1 min=2.248 max=2.260 runs=5 spec=1@12 meanMHz=2685 load1=4.61
+RESULT c workers=1 median=17.526s MB/s=5.2 min=16.581 max=17.559 runs=5 spec=1@12 meanMHz=2652 load1=1.75
+RESULT asm workers=20 median=0.118s MB/s=765.4 min=0.117 max=0.119 runs=5 spec=20@0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 meanMHz=2636 load1=1.69
+RESULT c workers=20 median=0.886s MB/s=101.9 min=0.885 max=0.888 runs=5 spec=20@0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 meanMHz=3220 load1=3.32
+
+# 20 workers pinned 0-19 (7 runs), P and E clocks
+RESULT asm workers=20 median=0.118s MB/s=767.0 min=0.116 max=0.118 runs=7 fP=3194 fE=2534 MHz
+RESULT c workers=20 median=0.887s MB/s=101.8 min=0.886 max=0.910 runs=7 fP=3651 fE=2644 MHz
+
+# single-thread A/B vs baseline lib (old = 8373b3d), CPU 4
+mtspeed_old  warm 1.220s 74.0 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.198s MB/s=75.4 min=1.194 max=1.205 runs=5 
+mtspeed_new  warm 1.279s 70.6 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.267s MB/s=71.3 min=1.265 max=1.270 runs=5 
+mtspeed_old  warm 1.227s 73.6 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.200s MB/s=75.3 min=1.198 max=1.203 runs=5 
+mtspeed_new  warm 1.271s 71.0 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.262s MB/s=71.6 min=1.259 max=1.263 runs=5 
+mtspeed_old  warm 1.223s 73.8 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.197s MB/s=75.4 min=1.191 max=1.201 runs=5 
+mtspeed_new  warm 1.272s 71.0 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.264s MB/s=71.5 min=1.262 max=1.264 runs=5 
+mtspeed_old  warm 1.220s 74.0 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.195s MB/s=75.5 min=1.195 max=1.198 runs=5 
+mtspeed_new  warm 1.269s 71.2 MB/s accepted=7653 nodes=27151858 RESULT asm workers=1 median=1.261s MB/s=71.6 min=1.260 max=1.271 runs=5 

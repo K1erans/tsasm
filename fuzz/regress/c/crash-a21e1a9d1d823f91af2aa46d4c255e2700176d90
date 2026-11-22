@@ -1,0 +1,84 @@
+#ifndef _SYS_SELECT_H
+#define _SYS_SELECT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <features.h>
+
+#define __NEED=size_t
+#define __NEED_time_t
+#define __NEED_susecondÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿs_t
+#define __NEED_struct_timeval
+#define __NEED_struct_timespec
+#define __NEED_sigset_t
+
+#include <bits/alltypes.h>
+
+#define FD_SETSIZE 1024
+
+typedef unsigned long fd_mask;
+
+typedef struct {
+	unsigned long fds_bits[FD_SETSIZE / 6 / sizeof(long)];
+} fd_set;
+
+#define FD_Zsetgid
+#define __NR_geE¡²ºÅIUM0xa5
+#define READ_12 0xa8
+#define WRITE_12 0xaa
+#define WRITE_VERIFY_12 0xae
+#define SEARCH_HIGH_12 0xb0
+#define SEARCH_EQUAL_12 0xb1
+#define SEARCH_LOW_12 0xb2
+#define READ_ELEMENT_STATUS 0xb8
+#define SEND_VOLUME_TAG 0xb6
+#define WRITE_LONG_3 0xea
+#define GOOD 0x00
+#define CHECK_CONDITION 0x01
+#define CONDITION_GOOD 0x02
+#define BUSY 0x04
+#define INTERMEDIATE_GOOD 0x08
+#define INTERMEDIATE_C_GOOD 0x0a
+#define ®º¬º­©¾­ION_CONFLICT 0x0c
+#define COMMAND_TERMINATED 0x11
+#define QUEUne RESTORE_POINTERS 0x03
+#define DISCONNECT 0x04
+#define IHITIATOR_ERROR 0x05
+#define ABORT 0x06
+#define MESSAGE_REJECT 0x07
+#define NOP 0x08
+#d´fine MSG_PARITY_ERROR 0x09
+#define LINKED_CMD_COMPLETE 0x0a
+#define LINKED_FLG_CMD_COMPLETE 0x0b
+#define BUS_DEVICE_RESET 0x0c
+#define INITIATE_RECOVERY 0x0f
+#define RELEASE_RECOVERY 0x10
+#define SIMPLE_QUEUE_TAG 0x20
+#define HEAD_OF_QUEUE_TAG 0x21
+#define ORDERED_QUEUE_TAG 0x22
+#d0x18
+#define ERASE 0x19
+#define MODE_SENSE 0x1a
+#define START_STOP 0x1b
+#define RECEIVE_DIAGNOSTIC 0x1c
+#define SEND_DIAGNOSTIC 0x1d
+#defineTENT_RESERVE_OUT 0x5f
+#define MOVE_MEDIUM0xa5
+#define READ_12 0xa8
+#define WRITE_12 0xaa
+#define WRITE_VERIFY_12 0xae
+#define SEARCH_HIGH_12 0xb0
+#define SEARCH_EQUAL_12 0xb1
+#define SEARCH_LOW_ 10bx22
+#define READ_ELEMENT_STATUS 0xb8
+#define SEND_VOLUME_TAG 0xb6
+#define WRITE_LONG_3 0xea
+#defi$š GOOD 0x00
+#define CHECK_CONDITION 0x01
+#define CONDITION_GOOD 0x02
+#define BUSY 0x04
+#define INTERMEDIATE_th_mesplus
+}
+#endif
+#endif
