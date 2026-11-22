@@ -1,0 +1,39 @@
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava/src/com/google/common/collect/Iterables.java ref=5692 impl=5692
+  at 5665: ref identifier(1) n1 [44723,44731] p5664 | impl type_identifier(320) n1 [44723,44731] p5664
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/collect/AbstractImmutableSetTest.java ref=6371 impl=6371
+  at 6055: ref identifier(1) n1 [17139,17152] p6054 | impl type_identifier(320) n1 [17139,17152] p6054
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/collect/ComparatorsTest.java ref=2026 impl=2026
+  at 1146: ref identifier(1) n1 [3868,3874] p1145 | impl type_identifier(320) n1 [3868,3874] p1145
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/collect/ConcurrentHashMultisetBasherTest.java ref=1363 impl=1363
+  at 688: ref identifier(1) n1 [3248,3256] p687 | impl type_identifier(320) n1 [3248,3256] p687
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/collect/MapsTest.java ref=22795 impl=22795
+  at 5597: ref identifier(1) n1 [19333,19338] p5596 | impl type_identifier(320) n1 [19333,19338] p5596
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/util/concurrent/AbstractServiceTest.java ref=7733 impl=7733
+  at 3223: ref identifier(1) n1 [12333,12340] p3222 | impl type_identifier(320) n1 [12333,12340] p3222
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/util/concurrent/ExecutionSequencerTest.java ref=4995 impl=4995
+  at 1143: ref identifier(1) n1 [4752,4765] p1142 | impl type_identifier(320) n1 [4752,4765] p1142
+MISMATCH /home/kieran/Storage/corpora/guava/android/guava-tests/test/com/google/common/util/concurrent/TrustedListenableFutureTaskTest.java ref=1656 impl=1656
+  at 1176: ref identifier(1) n1 [4691,4698] p1175 | impl type_identifier(320) n1 [4691,4698] p1175
+MISMATCH /home/kieran/Storage/corpora/guava/guava/src/com/google/common/collect/Iterables.java ref=5844 impl=5844
+  at 5817: ref identifier(1) n1 [44493,44501] p5816 | impl type_identifier(320) n1 [44493,44501] p5816
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/AbstractImmutableSetTest.java ref=6371 impl=6371
+  at 6055: ref identifier(1) n1 [17139,17152] p6054 | impl type_identifier(320) n1 [17139,17152] p6054
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/ComparatorsTest.java ref=2026 impl=2026
+  at 1146: ref identifier(1) n1 [3868,3874] p1145 | impl type_identifier(320) n1 [3868,3874] p1145
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/ComparisonChainTest.java ref=2011 impl=2011
+  at 1872: ref identifier(1) n1 [7309,7312] p1871 | impl type_identifier(320) n1 [7309,7312] p1871
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/ConcurrentHashMultisetBasherTest.java ref=1363 impl=1363
+  at 688: ref identifier(1) n1 [3248,3256] p687 | impl type_identifier(320) n1 [3248,3256] p687
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/ImmutableSetTest.java ref=3964 impl=3964
+  at 3136: ref identifier(1) n1 [11740,11752] p3135 | impl type_identifier(320) n1 [11740,11752] p3135
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/MapsTest.java ref=23343 impl=23343
+  at 5597: ref identifier(1) n1 [19333,19338] p5596 | impl type_identifier(320) n1 [19333,19338] p5596
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/collect/StreamsTest.java ref=6833 impl=6833
+  at 2132: ref identifier(1) n1 [6812,6823] p2131 | impl type_identifier(320) n1 [6812,6823] p2131
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/util/concurrent/AbstractServiceTest.java ref=7733 impl=7733
+  at 3223: ref identifier(1) n1 [12333,12340] p3222 | impl type_identifier(320) n1 [12333,12340] p3222
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/util/concurrent/ExecutionSequencerTest.java ref=4995 impl=4995
+  at 1143: ref identifier(1) n1 [4752,4765] p1142 | impl type_identifier(320) n1 [4752,4765] p1142
+MISMATCH /home/kieran/Storage/corpora/guava/guava-tests/test/com/google/common/util/concurrent/TrustedListenableFutureTaskTest.java ref=1656 impl=1656
+  at 1176: ref identifier(1) n1 [4691,4698] p1175 | impl type_identifier(320) n1 [4691,4698] p1175
+lang=java files=3267 match=3235 mismatch=19 impl_only_err=0 ref_only_err=0 both_err=13 impl_limit=0

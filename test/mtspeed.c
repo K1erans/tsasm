@@ -1,5 +1,5 @@
 // Throughput of tsasm or C tree-sitter at N worker threads over a file list held in memory.
-// usage: mtspeed <filelist> <asm|c> <workers> <runs> [cpu,cpu,...]
+// usage: mtspeed <lang> <filelist> <asm|c> <workers> <runs> [cpu,cpu,...]
 // Workers pull files largest-first from a shared counter, each with its own parser, the way
 // bench/ does. One untimed warm-up pass, then <runs> timed passes. Prints each pass, the median,
 // and per-pass work counters (accepted files, nodes) so a pass that did no work is visible.
@@ -13,10 +13,10 @@
 #include <string.h>
 #include <time.h>
 #include "tree_sitter/api.h"
-#include "../tsasm.h"
-const TSLanguage *tree_sitter_go(void);
+#include "langs.h"
 
 static int nfiles, use_c, workers, runs;
+static const TestLang *L;
 static uint8_t **srcs;
 static uint64_t *lens;
 static int *order;
@@ -41,7 +41,10 @@ static void *work(void *arg) {
   TsasmParser *p = tsasm_parser_new();
 #endif
   TSParser *tp = ts_parser_new();
-  ts_parser_set_language(tp, tree_sitter_go());
+  ts_parser_set_language(tp, L->ts());
+#ifndef OLD_API
+  const TsasmLanguage *lang = L->tsasm();
+#endif
   for (int r = 0; r <= runs; r++) {
     pthread_barrier_wait(&start_bar);
     long acc = 0, nodes = 0;
@@ -58,7 +61,7 @@ static void *work(void *arg) {
         int64_t n = tsasm_parse_go(srcs[f], lens[f], out, 1ul << 22);
 #else
         const TsasmNode *out;
-        int64_t n = tsasm_parse_go(p, srcs[f], lens[f], &out);
+        int64_t n = tsasm_parse(p, lang, srcs[f], lens[f], &out);
 #endif
         if (n > 0) { acc++; nodes += n; }
       }
@@ -80,10 +83,11 @@ static int bylen(const void *a, const void *b) {
 static int dcmp(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
 
 int main(int argc, char **argv) {
-  if (argc < 5) { fprintf(stderr, "usage: mtspeed <filelist> <asm|c> <workers> <runs> [cpus]\n"); return 2; }
-  use_c = strcmp(argv[2], "c") == 0; workers = atoi(argv[3]); runs = atoi(argv[4]);
-  if (argc > 5) for (char *t = strtok(argv[5], ","); t && ncpus < 256; t = strtok(NULL, ",")) cpus[ncpus++] = atoi(t);
-  FILE *fl = fopen(argv[1], "r"); char path[4096]; int cap = 1024; uint64_t total = 0;
+  if (argc < 6) { fprintf(stderr, "usage: mtspeed <lang> <filelist> <asm|c> <workers> <runs> [cpus]\n"); return 2; }
+  L = test_lang(argv[1]);
+  use_c = strcmp(argv[3], "c") == 0; workers = atoi(argv[4]); runs = atoi(argv[5]);
+  if (argc > 6) for (char *t = strtok(argv[6], ","); t && ncpus < 256; t = strtok(NULL, ",")) cpus[ncpus++] = atoi(t);
+  FILE *fl = fopen(argv[2], "r"); char path[4096]; int cap = 1024; uint64_t total = 0;
   srcs = malloc(cap * sizeof *srcs); lens = malloc(cap * sizeof *lens);
   while (fgets(path, sizeof path, fl)) {
     path[strcspn(path, "\n")] = 0; FILE *f = fopen(path, "rb"); if (!f) continue;

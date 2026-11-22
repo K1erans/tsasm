@@ -1,52 +1,72 @@
-# tsasm runtime: x86-64 assembly tree-sitter parser for Go
-GRAMMAR ?= $(HOME)/go/pkg/mod/github.com/tree-sitter/tree-sitter-go@v0.25.0/src/parser.c
+# tsasm runtime: x86-64 assembly tree-sitter parser
 AS ?= as
+TS_MODS ?= $(HOME)/go/pkg/mod/github.com/tree-sitter
+GRAMMARS ?= go c java json
+GRAMMAR_go ?= $(TS_MODS)/tree-sitter-go@v0.25.0/src/parser.c
+GRAMMAR_c ?= $(TS_MODS)/tree-sitter-c@v0.24.2/src/parser.c
+GRAMMAR_java ?= $(TS_MODS)/tree-sitter-java@v0.23.5/src/parser.c
+GRAMMAR_json ?= $(TS_MODS)/tree-sitter-json@v0.24.8/src/parser.c
 
 all: libtsasm.a
 
-build/tables.s build/lexer.s build/tables.inc build/tables.h: gen/gen.py $(GRAMMAR)
-	mkdir -p build
-	python3 gen/gen.py $(GRAMMAR) build
+.SECONDEXPANSION:
+build/lang_%.s: gen/gen.py $$(GRAMMAR_$$*)
+	@mkdir -p build
+	python3 gen/gen.py $(GRAMMAR_$*) $* build
 
 build/%.o: build/%.s
 	$(AS) -o $@ $<
 
-build/parser.o: src/parser.s build/tables.inc
-	$(AS) -I build -o $@ src/parser.s
+build/parser.o: src/parser.s
+	@mkdir -p build
+	$(AS) -o $@ src/parser.s
 
-libtsasm.a: build/parser.o build/lexer.o build/tables.o
+libtsasm.a: build/parser.o $(GRAMMARS:%=build/lang_%.o)
 	rm -f $@
 	ar rcs $@ $^
+
+# The library must hold no writable static data (the structural half of thread safety).
+check-static: libtsasm.a
+	sh scripts/check_static.sh libtsasm.a
 
 clean:
 	rm -rf build libtsasm.a
 
-.PHONY: all clean
+.PHONY: all clean check-static
 
-# ---- dev/test tools (need the go-tree-sitter + tree-sitter-go module sources) ----
-TS_RUNTIME ?= $(HOME)/go/pkg/mod/github.com/tree-sitter/go-tree-sitter@v0.25.0
-GRAMMAR_DIR := $(dir $(GRAMMAR))
-REFLIB := test/libref.a
+# ---- dev/test tools (C reference: the go-tree-sitter module's tree-sitter core + each grammar) ----
+TS_RUNTIME ?= $(TS_MODS)/go-tree-sitter@v0.25.0
+REFLIB := build/libref.a
+REFOBJS := build/ref.o build/ts_lib.o $(GRAMMARS:%=build/ts_%.o)
 
-$(REFLIB): test/ref.c tsasm.h
-	gcc -O2 -c -I$(TS_RUNTIME)/include -I$(TS_RUNTIME)/src $(TS_RUNTIME)/src/lib.c -o test/ts_lib.o
-	gcc -O2 -c -I$(GRAMMAR_DIR) $(GRAMMAR) -o test/go_parser.o
-	gcc -O2 -c -I$(TS_RUNTIME)/include test/ref.c -o test/ref.o
-	ar rcs $@ test/ref.o test/ts_lib.o test/go_parser.o
+build/ts_lib.o:
+	@mkdir -p build
+	gcc -O2 -c -I$(TS_RUNTIME)/include -I$(TS_RUNTIME)/src $(TS_RUNTIME)/src/lib.c -o $@
+build/ts_%.o: $$(GRAMMAR_$$*)
+	@mkdir -p build
+	gcc -O2 -c -I$(dir $<) $< -o $@
+build/ref.o: test/ref.c test/langs.h tsasm.h
+	@mkdir -p build
+	gcc -O2 -c -I$(TS_RUNTIME)/include test/ref.c -o $@
+$(REFLIB): $(REFOBJS)
+	rm -f $@
+	ar rcs $@ $^
 
-build/lexwrap.o: test/lexwrap.s
-	$(AS) -o $@ $<
+TOOLFLAGS := -O2 -g -pthread -I$(TS_RUNTIME)/include
+tools: libtsasm.a $(REFLIB)
+	gcc $(TOOLFLAGS) -o test/check_all test/check.c libtsasm.a $(REFLIB)
+	gcc $(TOOLFLAGS) -o test/fuzz test/fuzz.c libtsasm.a $(REFLIB)
+	gcc $(TOOLFLAGS) -o test/one test/one.c libtsasm.a $(REFLIB)
+	gcc $(TOOLFLAGS) -o test/mtspeed test/mtspeed.c libtsasm.a $(REFLIB)
 
-tools: libtsasm.a $(REFLIB) build/lexwrap.o
-	gcc -O2 -g -w -o test/check_all test/check.c test/model.c libtsasm.a build/lexwrap.o $(REFLIB)
-	gcc -O2 -w -o test/speed test/speed.c libtsasm.a $(REFLIB)
-	gcc -O2 -w -o test/fuzz test/fuzz.c libtsasm.a $(REFLIB)
-	gcc -O2 -g -o test/one test/one.c libtsasm.a
-	gcc -O2 -g -pthread -I$(TS_RUNTIME)/include -o test/mtspeed test/mtspeed.c libtsasm.a $(REFLIB)
-
-# parity vs C tree-sitter over GOROOT/src (memory capped at 4 GB)
+# Go parity vs C tree-sitter over GOROOT/src (memory capped at 4 GB)
 check: tools
 	find -L $$(go env GOROOT)/src -type f -name '*.go' | sort > test/files.txt
-	ulimit -v 4000000; cd test && ./check_all asm files.txt 1 > asm_full.txt; tail -1 asm_full.txt
+	systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 timeout 1200 test/check_all go test/files.txt 1 > test/asm_full.txt; tail -1 test/asm_full.txt
 
 .PHONY: tools check
+
+# Stress suite (test/stress.c): pathological inputs, retention, 20 threads (capped at 8 GB)
+stress stress-smoke:
+	$(MAKE) -f test/stress.mk $@
+.PHONY: stress stress-smoke
