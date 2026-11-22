@@ -1,0 +1,1 @@
+/usr/lib/go-1.22/src/cmd/cgo/internal/test/issue27340/a.go

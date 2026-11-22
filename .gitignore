@@ -1,0 +1,13 @@
+/build/
+*.o
+*.a
+/test/check_all
+/test/check_model
+/test/fuzz
+/test/lexspeed
+/test/one
+/test/one_dbg
+/test/reftrace
+/test/speed
+/test/speedasm
+/test/speedmodel
