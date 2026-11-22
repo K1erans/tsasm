@@ -74,7 +74,7 @@ Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the par
 
 | budget | value | headroom on real code |
 |---|---|---|
-| memory | `tsasm_parser_set_memory_limit`, default 1 GiB | the 1.9 MB Go file that needs the most holds 76 MB (`test/memprof`) |
+| memory | `tsasm_parser_set_memory_limit`, default 1 GiB | the 1.9 MB Go file that needs the most holds 59 MB (`test/memprof`) |
 | work | 64 units per input byte + 10000 | worst accepted file ≥ 1 KB uses 1.30 units/byte (Go), 0.85 (C), 0.56 (Java), 0.78 (JSON) |
 | tree nodes | 32 per input byte + 100000, at most 2^27 | 2^27 keeps every 32-bit size computation exact |
 | input length | below 4 GiB | byte offsets are 32-bit, as in tree-sitter |
@@ -157,7 +157,10 @@ memory at 20 threads (0.83–0.88 GB to 0.58–0.62 GB with the corpus, `results
 Tree nodes then shrank from 32 to 24 bytes (8 were padding): a big Go parse needs 24.6 bytes of
 buffers per input byte instead of 30.1, one thread is 0.4% faster and 20 threads 5.5% faster
 (0.115–0.116 s against 0.121–0.123 s per pass), peak memory 0.53–0.55 GB against 0.59–0.60
-(`results/ab_tree24.txt`).
+(`results/ab_tree24.txt`). A shifted token's leaf then dropped to 16 bytes (it has no children, so no
+child index or precedence; reads of a childless tree's precedence give 0): 22.3 bytes per input
+byte for big Go files, Java -9%, JSON -11%, speed unchanged or slightly faster
+(`results/ab_leaf16.txt`).
 
 **What limits scaling.** Measured with `scripts/scaling_pinned.sh` on the commit before the
 retention change, with the clock of the busy CPUs sampled during each run (`results/scaling.txt`):

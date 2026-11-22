@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
   char path[4096]; int n = 0;
   // name, count offset, capacity offset, entry size
   struct { const char *name; int cnt, cap, size; } B[] = {
-    {"trees", 8, 12, 24}, {"kids", 24, 28, 4}, {"out", -1, 100, 16}, {"estk", -1, 116, 16},
+    {"trees", 8, 12, 4}, {"kids", 24, 28, 4}, {"out", -1, 100, 16}, {"estk", -1, 116, 16},
     {"stack", 328, 332, 24}, {"ext", 344, 348, 64}, {"heads", -1, 364, 8}, {"slices", -1, 380, 16},
     {"cells", -1, 396, 8}, {"slk", -1, 412, 4}};
   enum { NB = sizeof B / sizeof *B };
@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
       memset(mark, 0, nn); int sp = 0; stk[sp++] = root; mark[root] = 1;
       while (sp) {
         uint32_t t = stk[--sp]; reach++;
-        uint32_t cc = *(uint32_t *)(tr + 24 * (size_t)t + 12), ci = *(uint32_t *)(tr + 24 * (size_t)t + 16);
+        uint32_t cc = *(uint32_t *)(tr + 4 * (size_t)t + 12), ci = *(uint32_t *)(tr + 4 * (size_t)t + 16);
         if (!cc) leaves++;
         reachk += cc;
         for (uint32_t j = 0; j < cc; j++) { uint32_t c = kids[ci + j]; if (!mark[c]) { mark[c] = 1; stk[sp++] = c; } }
@@ -58,6 +58,6 @@ int main(int argc, char **argv) {
   for (int i = 0; i < NB; i++) { printf("%-8s %12.2f %12.2f\n", B[i].name, used[i] / bytes, cap[i] / bytes); tu += used[i]; tc += cap[i]; }
   printf("%-8s %12.2f %12.2f\n", "total", tu / bytes, tc / bytes);
   printf("most memory: %.1f MB of buffers for %.2f MB, %s\n", maxcap / 1e6, maxlen / 1e6, maxpath);
-  printf("trees: %.3f per byte in the arena, %.3f reachable from the root (%.1f%%), %.3f of them leaves; reachable kids %.3f per byte\n",
-         total / bytes, reach / bytes, 100 * reach / total, leaves / bytes, reachk / bytes);
+  printf("trees: %.3f reachable from the root per byte, %.3f of them leaves; arena %.2f bytes per byte; reachable kids %.3f per byte\n",
+         reach / bytes, leaves / bytes, total * 4 / bytes, reachk / bytes);
 }

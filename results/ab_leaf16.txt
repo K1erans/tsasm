@@ -1,0 +1,23 @@
+# 16-byte leaves (branch leaf16) vs main f3985a2 (24-byte nodes): test/mtspeed go corpus/go126.txt asm <w> 5, interleaved, memory capped, 1 worker on CPU 4. 2026-11-22T15:16Z
+1w n24 median=1.299
+1w leaf median=1.286
+1w n24 median=1.292
+1w leaf median=1.302
+1w n24 median=1.721
+1w leaf median=1.278
+1w n24 median=1.292
+1w leaf median=1.277
+1w n24 median=1.292
+1w leaf median=1.277
+1w n24 median=1.306
+1w leaf median=1.311
+20w n24 median=0.113 maxrss_kb=538316 
+20w leaf median=0.112 maxrss_kb=515388 
+20w n24 median=0.114 maxrss_kb=513924 
+20w leaf median=0.110 maxrss_kb=543352 
+20w n24 median=0.113 maxrss_kb=521356 
+20w leaf median=0.112 maxrss_kb=545564 
+20w n24 median=0.116 maxrss_kb=539068 
+20w leaf median=0.111 maxrss_kb=551492 
+
+# test/memprof, bytes of buffers per input byte (used), 24-byte nodes -> 16-byte leaves: Go 40 largest 24.58 -> 22.29, GOROOT 21.51 -> 19.50, Java 14.13 -> 12.82, C 7.44 -> 6.69, JSON 11.66 -> 10.36

@@ -15,7 +15,7 @@
 # registers except flags, so hot paths can call them without spilling.
 #
 # Data model:
-#   Tree node (24 bytes): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
+#   Tree node (24 bytes; a shifted token's leaf is the first 16, child count 0): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
 #                         u32 child_count, u32 child_index (into kids[]), i32 dynamic_precedence
 #   Stack node (24 bytes): C tree-sitter's graph-structured stack node: u16 state, u8 link count,
 #                         u8 mark, i32 dynamic_precedence, link 0 (u32 node, u32 tree), u32 position,
@@ -144,7 +144,9 @@
 	.set N_CC, 12
 	.set N_CI, 16
 	.set N_DYN, 20
-	.set N_SIZE, 24
+	.set N_SIZE, 24                     # an inner node; ids count 4-byte units of the arena
+	.set N_UNITS, 6
+	.set LEAF_UNITS, 4                  # a leaf stops after its child count (always 0)
 
 	.text
 
@@ -273,13 +275,13 @@ p_grow_nodes:
 	push rsi
 	push rcx
 	mov esi, dword ptr [r15+C_NN]
+	add esi, N_UNITS
 	cmp esi, dword ptr [r15+C_NODELIM]
-	jae p_limit
+	ja p_limit
 	cmp esi, dword ptr [r15+C_NCAP]
-	jb 1f
-	inc esi
+	jbe 1f
 	lea rdi, [r15+C_NODES]
-	mov ecx, N_SIZE
+	mov ecx, 4
 	call p_grow
 1:	call p_set_navail
 	pop rcx
@@ -352,7 +354,7 @@ p_free_buf:
 # p_release_work: free every buffer but the output array; usage drops to the output's (r15 = ctx).
 p_release_work:
 	push rbx
-	RELEASE C_NODES, N_SIZE
+	RELEASE C_NODES, 4
 	RELEASE C_KIDS, 4
 	RELEASE C_ESTK, 16
 	RELEASE C_SN, SN_SIZE
@@ -376,19 +378,41 @@ p_release:
 	pop rbx
 	ret
 
-# TREE_OFF reg64: tree index -> byte offset in the arena (index * N_SIZE)
+# TREE_OFF reg64: tree id -> byte offset in the arena (ids count 4-byte units)
 .macro TREE_OFF reg
-	lea \reg, [\reg + \reg*2]
-	shl \reg, 3
+	shl \reg, 2
 .endm
 
-# ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
-.macro ALLOC_NODE reg
+# ALLOC_TREE reg32, units: reg = a new tree id; the arena keeps room for an inner node past
+# the end, so reading a leaf's absent fields stays inside it. Preserves other registers.
+.macro ALLOC_TREE reg, units
 	mov \reg, dword ptr [r15+C_NN]
+	add \reg, N_UNITS
 	cmp \reg, dword ptr [r15+C_NAVAIL]
-	jb 91f
+	jbe 91f
 	call p_grow_nodes
-91:	inc dword ptr [r15+C_NN]
+91:	mov \reg, dword ptr [r15+C_NN]
+	add dword ptr [r15+C_NN], \units
+.endm
+.macro ALLOC_NODE reg
+	ALLOC_TREE \reg, N_UNITS
+.endm
+
+# A leaf has no precedence field: a childless tree's precedence is 0.
+# ADD_DYN dst32, addr: dst += precedence of the tree at [addr]. Flags clobbered.
+.macro ADD_DYN dst, addr
+	cmp dword ptr [\addr + N_CC], 0
+	je 92f
+	add \dst, dword ptr [\addr + N_DYN]
+92:
+.endm
+# MOV_DYN dst32, addr: dst = that precedence (dst may be part of addr).
+.macro MOV_DYN dst, addr
+	cmp dword ptr [\addr + N_CC], 0
+	mov \dst, dword ptr [\addr + N_DYN]
+	jne 93f
+	mov \dst, 0
+93:
 .endm
 
 # ---------------------------------------------------------------------------
@@ -747,7 +771,7 @@ p_push:
 	TREE_OFF r11
 	mov edx, dword ptr [r10 + r11 + N_END]
 	mov dword ptr [r8+SN_POS], edx
-	mov edx, dword ptr [r10 + r11 + N_DYN]
+	MOV_DYN edx, r10+r11
 	lea r11, [rcx+rcx*2]
 	shl r11, 3
 	add r11, qword ptr [r15+C_SN]
@@ -763,7 +787,7 @@ p_push:
 	jnz .Lsl_a\@
 	mov ecx, 1                          # eof is always extra
 .Lsl_a\@:
-	ALLOC_NODE eax
+	ALLOC_TREE eax, LEAF_UNITS
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9d, eax
 	TREE_OFF r9
@@ -773,8 +797,7 @@ p_push:
 	mov dword ptr [r9+N_SYM], ecx
 	mov r10, qword ptr [r15+C_TSTART]   # start, end
 	mov qword ptr [r9+N_START], r10
-	mov qword ptr [r9+N_CC], 0
-	mov dword ptr [r9+N_DYN], 0
+	mov dword ptr [r9+N_CC], 0
 	mov edi, edi
 	mov r11d, eax                       # the leaf
 	mov eax, dword ptr [r15+C_SFREE]
@@ -942,7 +965,7 @@ p_reduce_fast:
 3:	dec esi
 	mov dword ptr [r10 + rsi*4], ebx
 	TREE_OFF rbx
-	add edi, dword ptr [r9 + rbx + N_DYN]
+	ADD_DYN edi, r9+rbx
 	inc edx
 	jmp .Lrf_take
 .Lrf_built:
@@ -1073,7 +1096,7 @@ p_reduce_fast:
 	jne .Lrf_general
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
-	add edi, dword ptr [r9 + r12 + N_DYN]
+	ADD_DYN edi, r9+r12
 	dec edx
 	jnz 1b
 	ALLOC_NODE eax                      # parent; ecx = base node
@@ -1224,14 +1247,14 @@ p_reduce_fast:
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
 	TREE_OFF rax
-	add edi, dword ptr [r9 + rax + N_DYN]
+	ADD_DYN edi, r9+rax
 	dec edx
 	jmp 1b
 4:	mov ecx, r12d                       # this slice's link
 	dec esi
 	mov dword ptr [r10 + rsi*4], r13d
 	TREE_OFF r13
-	add edi, dword ptr [r9 + r13 + N_DYN]
+	ADD_DYN edi, r9+r13
 	mov edx, ebp
 	sub edx, dword ptr [rsp+RF_D]
 2:	dec edx
@@ -1243,7 +1266,7 @@ p_reduce_fast:
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
 	TREE_OFF rax
-	add edi, dword ptr [r9 + rax + N_DYN]
+	ADD_DYN edi, r9+rax
 	jmp 2b
 3:	mov eax, dword ptr [rsp+RF_PARENT]  # ecx = the slice's base node
 	mov rdx, rax
@@ -1795,8 +1818,8 @@ p_add_link:
 	TREE_OFF rcx
 	mov edx, r14d
 	TREE_OFF rdx
-	mov ecx, dword ptr [r8 + rcx + N_DYN]
-	mov edx, dword ptr [r8 + rdx + N_DYN]
+	MOV_DYN ecx, r8+rcx
+	MOV_DYN edx, r8+rdx
 	cmp edx, ecx
 	jle .Lal_ret
 	mov dword ptr [rax+4], r14d
@@ -1878,7 +1901,7 @@ p_add_link:
 	mov r9, qword ptr [r15+C_SN]
 	mov eax, r14d
 	TREE_OFF rax
-	mov edx, dword ptr [r8 + rax + N_DYN]
+	MOV_DYN edx, r8+rax
 	mov eax, r13d
 	lea rax, [rax+rax*2]
 	add edx, dword ptr [r9 + rax*8 + SN_DYN]
@@ -2021,7 +2044,7 @@ p_build:
 2:	mov r12d, dword ptr [rcx + rdi*4]
 	mov dword ptr [r10 + r11*4], r12d
 	TREE_OFF r12
-	add edx, dword ptr [r8 + r12 + N_DYN]
+	ADD_DYN edx, r8+r12
 	inc edi
 	inc r11d
 	dec esi
@@ -2065,7 +2088,7 @@ p_select:
 	lea edx, [r13 + rbx]
 	mov edx, dword ptr [rcx + rdx*4]
 	TREE_OFF rdx
-	add eax, dword ptr [r8 + rdx + N_DYN]
+	ADD_DYN eax, r8+rdx
 	inc ebx
 	jmp 1b
 2:	mov edx, r12d
@@ -2431,7 +2454,7 @@ p_accept:
 	mov dword ptr [r10 + r11*4], edi
 	inc r11d
 	TREE_OFF rdi
-	add r9d, dword ptr [r8 + rdi + N_DYN]
+	ADD_DYN r9d, r8+rdi
 	ret
 
 # ---------------------------------------------------------------------------
@@ -2574,7 +2597,7 @@ p_accept:
 	jne .Lad_rslow0
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
-	add edi, dword ptr [r9 + r11 + N_DYN]
+	ADD_DYN edi, r9+r11
 	dec edx
 	jnz 1b
 	lea r11, [rcx+rcx*2]                # ecx = base node
@@ -2944,7 +2967,9 @@ tsasm_parse:
 	mov r8d, 0x7FFFFFF
 	cmp rax, r8
 	cmova rax, r8
-	mov dword ptr [r15+C_NODELIM], eax  # node budget: 32 * len + 100000
+	lea rax, [rax+rax*2]
+	add rax, rax
+	mov dword ptr [r15+C_NODELIM], eax  # node budget: 32 * len + 100000 inner nodes' worth of units
 	call p_set_navail
 	mov rax, ERR_LIMIT
 	mov r8d, 0xFFFFFFF0                 # byte offsets are 32-bit: reject inputs >= ~4 GiB
