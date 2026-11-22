@@ -3,6 +3,7 @@
 # Fails if any summary line or any mismatch detail differs. Memory capped at 4 GB per grammar.
 # usage: scripts/parity.sh [threads]
 threads=${1:-12}
+make -s tools || exit 1
 status=0
 mkdir -p build/parity
 for lang in go c java json; do

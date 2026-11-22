@@ -67,9 +67,8 @@ Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the par
 | budget | value | headroom on real code |
 |---|---|---|
 | memory | `tsasm_parser_set_memory_limit`, default 1 GiB | the 1.9 MB Go file that needs the most holds 92 MB |
-| work | 64 units per input byte + 10000 | worst accepted file ≥ 1 KB uses 4.04 units/byte (Go), 0.84 (C), 0.74 (Java), 0.78 (JSON) |
+| work | 64 units per input byte + 10000 | worst accepted file ≥ 1 KB uses 1.30 units/byte (Go), 0.85 (C), 0.56 (Java), 0.78 (JSON) |
 | tree nodes | 32 per input byte + 100000, at most 2^27 | 2^27 keeps every 32-bit size computation exact |
-| live GLR versions | 64 | one Go file in 6513 needs more (`crypto/tls/handshake_messages.go`) |
 | input length | below 4 GiB | byte offsets are 32-bit, as in tree-sitter |
 
 ## How it maps tree-sitter semantics
@@ -86,15 +85,20 @@ Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the par
   sequence, indexed by structural child position. An alias makes a hidden node visible.
 - **Token cache.** A single-entry cache follows the C runtime's `can_reuse_first_leaf` rules,
   which matters when several versions lex at the same position.
-- **GLR.** Actions with several entries fork the version: each reduce runs on a copy and the
-  shift stays on the original, with C's version ordering and renumbering. Versions advance in
-  lockstep by byte position. Each version is a linear stack over a shared append-only tree
-  arena. C's graph-structured-stack merges are emulated by convergence detection: two versions
-  in the same state at the same position whose stacks agree below a divergent segment are
-  resolved like `stack_node_add_link` and `select_children` (dynamic precedence, then keep the
-  existing version if the subtrees are equivalent, else `ts_subtree_compare`). Versions C
-  would hold as one stack head form a merge group, which changes how later conflicts between
-  them resolve (this fixed Java's interface-versus-annotation cases).
+- **GLR.** A port of C tree-sitter's graph-structured stack (`stack.c`) and GLR driver
+  (`ts_parser__advance`, `ts_parser__reduce`, `ts_parser__accept`, `ts_parser__condense_stack`),
+  limited to what error-free parsing needs. Stack nodes are 24 bytes with one inline link and
+  up to 7 more in 64-byte extension blocks (C's `MAX_LINK_COUNT` 8). A pop walks every path with
+  up to 64 iterators (`MAX_ITERATOR_COUNT`) and groups the results into slices as `add_slice`
+  does. `select_children` picks between alternative child lists (dynamic precedence, then
+  `ts_subtree_compare`). Heads in the same state at the same position merge, recursively
+  merging links, and condense keeps at most 6 versions (`MAX_VERSION_COUNT`), as C does, so
+  there is no separate version cap. Left out: error costs and recovery, pause/resume (a version
+  with no action dies), external tokens and incremental reuse. Two fast paths sit in front of
+  the general code: a reduce whose path has one link per node builds in place and frees the
+  popped nodes, and a reduce that forks into distinct predecessors skips the iterator walk.
+  A mark-and-sweep pass recycles the rest when the node arena fills. `test/proto.c` is the C
+  prototype the assembly follows; `make proto` checks it like the library.
 
 ## Results
 
@@ -106,9 +110,9 @@ reruns all four and fails on any difference from `results/parity_<lang>.txt`.
 
 | grammar | corpus | exact match | mismatch | tsasm rejects, C accepts |
 |---|---|---|---|---|
-| Go | Go 1.22 `src`, 6513 files, 70.3 MB | 6424 / 6464 (**99.38%**) | 39 | 1 (version cap) |
-| C | system headers and C testdata, 8732 files, 436 MB | 3554 / 3556 | 2 | 0 |
-| Java | Guava, 3267 files, 29.7 MB | 3235 / 3254 (99.42%) | 19 | 0 |
+| Go | Go 1.22 `src`, 6513 files, 70.3 MB | 6464 / 6464 (**100%**) | 0 | 0 |
+| C | system headers and C testdata, 8732 files, 436 MB | 3556 / 3556 | 0 | 0 |
+| Java | Guava, 3267 files, 29.7 MB | 3254 / 3254 | 0 | 0 |
 | JSON | app resources and testdata, 2539 files, 48.7 MB | 2529 / 2529 | 0 | 0 |
 
 On every file C rejects, tsasm rejects too (49 Go, 5176 C, 13 Java, 10 JSON).
@@ -131,9 +135,11 @@ P-core.
 C's column is parse only. tsasm's includes emitting the flat node array; bench copies it into
 a Go slice on top. On this corpus tsasm accepts 7653 files and C 7654; parity is 99.48%.
 
-Single-thread cost of the reentrant, multi-grammar runtime against the original static Go-only
-build: about +3.1% (old 1.214–1.227 s, new 1.252–1.264 s per pass, 4 interleaved pairs on one
-P-core, `results/ab_single_thread.txt`).
+Single-thread cost of the reentrant, multi-grammar, graph-structured-stack runtime against the
+original static Go-only build: about +3.1% (old 1.199–1.220 s, new 1.236–1.260 s per pass, 6
+interleaved rounds on one P-core, per-round +2.5% to +4.0%, `results/ab_single_thread_gss.txt`).
+The GSS port first cost +36%; in-place and fork fast paths, inlined shift and reduce, and inline
+merge checks brought it back. The pre-GSS figure was also +3.1% (`results/ab_single_thread.txt`).
 
 **What limits scaling.** Measured with `scripts/scaling_pinned.sh` on the commit before the
 retention change, with the clock of the busy CPUs sampled during each run (`results/scaling.txt`):
@@ -198,7 +204,7 @@ replays them in both guard modes):
   to the end, and now tsasm does too.
 
 **Stress suite** (`make stress`, `test/stress.c`, capped at 8 GB): 126 of 126 checks pass on
-the final library in 127 s.
+the final library in 124 s.
 
 - 124 pathological inputs: nesting to 10^7 levels, ambiguous parameter lists, generics,
   unterminated strings and comments, NUL bytes, random bytes and token soup up to 10 MB, lengths
@@ -206,9 +212,11 @@ the final library in 127 s.
   limits from 0 to 4 GiB, and a 220 MB valid Go file. Each must give its expected class
   (accept, syntax error, or limit), confirmed against C tree-sitter on a small instance, and the
   parser must parse correctly afterwards.
+- Ambiguous parameter lists no longer copy stacks: `f(a, a, …, a int)` with 100,000 identical
+  names parses in 0.18 s (it returned `TSASM_ERR_LIMIT` at 400 names before the GSS port).
 - Retention: after a parse holding 705 MiB, a small parse drops the parser to 0.04 MiB, and
   freeing it returns to the 0.02 MiB baseline.
-- Threads: 20 threads for 60 s ran 2.81M parses (persistent parsers, a fresh parser per file,
+- Threads: 20 threads for 60 s ran 5.13M parses (persistent parsers, a fresh parser per file,
   random memory limits, and mutated inputs) checked against a single-threaded reference: 0
   mismatches, 0 anomalies.
 
@@ -283,18 +291,6 @@ changes.
 
 ## Known gaps
 
-- **Long ambiguous parameter lists** (the 39 Go mismatches). In `func f(a, b, …, z int64)` with
-  about 10 or more names, every name can be read as a type or a parameter name. C's
-  graph-structured stack, under its internal limits (`MAX_VERSION_COUNT` 6, `MAX_LINK_COUNT` 8,
-  64 pop iterators), produces a degraded parse where the first name becomes a type-only
-  `parameter_declaration`. tsasm keeps the correct single declaration. Matching C exactly needs
-  a faithful GSS port. Long lists also copy linear stacks quadratically. A list of 400 or more
-  identical one-letter names (`f(a, a, …, a int)`) returns `TSASM_ERR_LIMIT` from the work
-  budget. 1,000 distinct names still parse (42 units per byte); real code peaks at 4.
-- **Java's 19 mismatches** are `identifier` versus `type_identifier` choices where C's merged
-  stack heads create paths that no single linear version holds. They also need a GSS.
-- **The version cap.** One Go file needs more than 64 live versions and returns
-  `TSASM_ERR_LIMIT`.
 - **No error recovery,** by design: inputs with syntax errors return `TSASM_ERR_SYNTAX`.
 - **The memory limit counts capacity,** not bytes in use, so a parser's resident memory is
   usually about half its charged total.

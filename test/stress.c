@@ -179,7 +179,7 @@ static const Family FAMS[] = {
   {"unary", g_unary, E_ACC, 0, NEST}, {"unary_open", g_unary_open, E_SYN, 0, NEST},
   {"sum", g_sum, E_ACC, 0, CHAIN}, {"sum_open", g_sum_open, E_SYN, 0, CHAIN},
   {"sel", g_sel, E_ACC, 0, CHAIN}, {"call", g_call, E_ACC, 0, CHAIN},
-  {"params", g_params, E_ACC, GLRCAP, GLR}, {"params_open", g_params_open, E_SYN, GLRCAP, GLR},
+  {"params", g_params, E_ACC, 0, GLR}, {"params_open", g_params_open, E_SYN, 0, GLR},
   {"generic", g_generic, E_ACC, 0, {1000, 100000, 1000000}, {1000, 100000}},
   {"generic_stmt", g_generic_stmt, E_ACC, 0, {1000, 100000, 1000000}, {1000, 100000}},
   {"typeargs", g_typeargs, E_ACC, 0, GLR},

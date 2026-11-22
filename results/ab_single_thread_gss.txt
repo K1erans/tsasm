@@ -1,0 +1,8 @@
+# GSS build (v8) vs original static Go-only build: 6 interleaved rounds, test/mtspeed go corpus/go126.txt asm 1 5 4, one P-core, 2026-11-22T11:19Z
+mtspeed_old median=1.211	mtspeed_v8 median=1.260
+mtspeed_old median=1.220	mtspeed_v8 median=1.255
+mtspeed_old median=1.220	mtspeed_v8 median=1.254
+mtspeed_old median=1.216	mtspeed_v8 median=1.246
+mtspeed_old median=1.199	mtspeed_v8 median=1.247
+mtspeed_old median=1.205	mtspeed_v8 median=1.236
+mean old 1.2118 new 1.2497 ratio 1.031 (per-round +2.5% .. +4.0%)
