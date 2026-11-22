@@ -178,7 +178,7 @@ five ways:
 4. a low memory limit gives `TSASM_ERR_LIMIT` or the same tree;
 5. tsasm never accepts what C tree-sitter rejects.
 
-Four rounds on 2026-11-22, 8 jobs each (4 grammars × 2 guard modes), fork mode, inputs up to
+Five rounds on 2026-11-22, 8 jobs each (4 grammars × 2 guard modes), fork mode, inputs up to
 8 KiB, 20 s timeout, memory capped:
 
 | round | code | wall time | executions | findings |
@@ -186,13 +186,19 @@ Four rounds on 2026-11-22, 8 jobs each (4 grammars × 2 guard modes), fork mode,
 | 1 | first harness build | 57 min | about 600,000 | 2 real bugs, 1 harness bug |
 | 2 | after the round 1 fixes | 54 min | 2,663,018 | none |
 | 3 | after the speed work | 16 min | 902,519 | none |
-| 4 | final library | 150 min | 9,589,679 | none |
-| total | | 4.6 h (37 job-hours) | about 13.8 million | |
+| 4 | final pre-GSS library | 150 min | 9,589,679 | none |
+| 5 | graph-structured stack (shipped) | 61 min | 4,097,240 | none |
+| total | | 5.6 h (45 job-hours) | about 17.9 million | |
 
 Rounds 2 and 3 were stopped early so the next round would fuzz the code that ships. Each restart
 replayed the whole accumulated corpus (about 5,000 C, 2,000 Go, 2,000 Java and 630 JSON inputs)
-through the new binaries in both guard modes first, with no failures. Final coverage:
-14,680 counters hit in C, 7,753 in Java, 6,740 in Go and 1,637 in JSON.
+through the new binaries in both guard modes first, with no failures. Round 5 replayed all
+11,425 saved inputs through the GSS build first, then fuzzed it: 0 crashes, out-of-memory
+kills or oracle failures. libFuzzer saved one timeout and five slow units, all written in the
+same second across four grammars while valgrind loaded the machine; each replays in at most
+27 ms and passes every check, so they were a host stall (kept in `round5/stall_artifacts`).
+Coverage on the GSS build: 15,506 counters hit in C, 8,755 in Java, 7,289 in Go and 1,683 in
+JSON.
 
 Round 1 found two real bugs, both fixed and kept in `fuzz/regress/` (`make fuzz-regress`
 replays them in both guard modes):
@@ -220,8 +226,11 @@ the final library in 124 s.
   random memory limits, and mutated inputs) checked against a single-threaded reference: 0
   mismatches, 0 anomalies.
 
-**valgrind.** memcheck over a 1-in-20 sample of every corpus (385 Go, 436 C, 163 Java and
-126 JSON files): 0 errors, 0 bytes lost. helgrind and DRD with 4 threads over 100 Go and
+**valgrind.** memcheck over a 1-in-20 sample of every corpus on the GSS build (326 Go, 437 C,
+164 Java and 127 JSON files): 0 errors, 0 bytes definitely or indirectly lost; what remains at
+exit is the harness's 64 MiB compare buffer and the C reference's parser. The pre-GSS build
+gave the same result on 385/436/163/126 files. helgrind with 4 threads over 100 Go and 100 Java
+files on the GSS build: 0 errors. On the pre-GSS build, helgrind and DRD with 4 threads over 100 Go and
 100 Java files: 0 errors. The only suppressions are valgrind's default glibc and ld entries.
 
 **Static state.** `make check-static` reads every object's section table and fails on any
