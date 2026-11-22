@@ -52,6 +52,7 @@
 	.set C_CAPHIT, 160
 	.set C_RESULT, 168
 	.set C_NEXTGID, 176                 # merge group ids handed out this parse
+	.set C_GLIVE, 180                   # bit0: a group formed this condense, bit1: some V_GID != 0
 	.set C_LANG, 192                   # copy of the TsasmLanguage descriptor for this parse
 	.set C_VERS, 320
 	.set MAXVERS, 128
@@ -74,13 +75,15 @@
 	.set L_TOTAL_SYMS, 92               # u32 symbols + aliases
 	.set L_WORD, 96                     # u32 keyword capture token, 0 if none
 	.set L_RWORDS, 100                  # u32 qwords per reserved word set
-	.set L_SIZE, 112
+	.set L_SYMBOL_OUT, 112              # u32 [total syms] public symbol | named << 16 | visible << 31
+	.set L_SIZE, 128
 
 	.set ERR_SYNTAX, -1
 	.set ERR_LIMIT, -3
 	.set ERR_NOMEM, -4
 	.set DEFAULT_MEMLIMIT, 1 << 30
-	.set RETAIN_BYTES, 64 << 20
+	.set RETAIN_LIMIT_SHIFT, 3          # an eighth of the memory limit
+	.set RETAIN_SHIFT, 8                # 256 bytes of buffers per input byte
 
 	.set V_E, 0
 	.set V_SIZE, 8
@@ -1272,7 +1275,7 @@ p_emit:
 	push r12
 	push r13
 	push r14
-	mov esi, dword ptr [r15+C_NN]       # visible nodes <= arena nodes
+	mov esi, 1                          # the root; the rest grows as nodes are emitted
 	cmp esi, dword ptr [r15+C_OUTCAP]
 	jbe 1f
 	lea rdi, [r15+C_OUT]
@@ -1280,20 +1283,14 @@ p_emit:
 	call p_grow
 1:	mov r8, qword ptr [r15+C_NODES]
 	mov r12, qword ptr [r15+C_OUT]
-	mov r13d, dword ptr [r15+C_OUTCAP]
 	mov ecx, dword ptr [r15+C_FINISHED]
 	mov eax, ecx
 	shl rax, 5
 	lea r9, [r8 + rax]
+	mov r13, qword ptr [r15+C_LANG+L_SYMBOL_OUT]
 	movzx eax, word ptr [r9+N_SYM]
-	mov rdx, qword ptr [r15+C_LANG+L_SYMBOL_FLAGS]
-	movzx edx, byte ptr [rdx + rax]
-	shr edx, 1
-	and edx, 1
-	mov rsi, qword ptr [r15+C_LANG+L_PUBLIC_SYMBOL]
-	movzx eax, word ptr [rsi + rax*2]
-	shl edx, 16
-	or eax, edx
+	mov eax, dword ptr [r13 + rax*4]
+	btr eax, 31
 	mov dword ptr [r12], eax
 	mov rax, qword ptr [r9+N_START]
 	mov qword ptr [r12+4], rax
@@ -1343,26 +1340,18 @@ p_emit:
 2:	movzx eax, word ptr [r11+N_SYM]
 	test edx, edx
 	cmovnz eax, edx                     # s
-	mov rcx, qword ptr [r15+C_LANG+L_SYMBOL_FLAGS]
-	movzx ecx, byte ptr [rcx + rax]
+	mov eax, dword ptr [r13 + rax*4]    # output word, visible in bit 31
 	mov r9d, dword ptr [rdi+12]         # parent out index
-	test edx, edx
-	jnz 3f
-	test ecx, 1
+	btr eax, 31
+	jc 3f
+	test edx, edx                       # an aliased node is visible
 	jz 4f
-3:	cmp r14, r13
-	jae .Lem_full
+3:	cmp r14d, dword ptr [r15+C_OUTCAP]
+	jae .Lem_grow
+.Lem_put:
 	mov rdx, r14
 	shl rdx, 4
 	add rdx, r12
-	push rsi
-	mov rsi, qword ptr [r15+C_LANG+L_PUBLIC_SYMBOL]
-	movzx eax, word ptr [rsi + rax*2]
-	pop rsi
-	shr ecx, 1
-	and ecx, 1
-	shl ecx, 16
-	or eax, ecx
 	mov dword ptr [rdx], eax
 	mov rax, qword ptr [r11+N_START]
 	mov qword ptr [rdx+4], rax
@@ -1393,8 +1382,17 @@ p_emit:
 .Lem_done:
 	mov rax, r14
 	jmp .Lem_ret
-.Lem_full:                              # unreachable while the bound above holds
-	mov rax, ERR_LIMIT
+.Lem_grow:
+	push rdi
+	push rsi
+	lea rdi, [r15+C_OUT]
+	lea esi, [r14+1]
+	mov ecx, 4
+	call p_grow
+	pop rsi
+	pop rdi
+	mov r12, qword ptr [r15+C_OUT]
+	jmp .Lem_put
 .Lem_ret:
 	pop r14
 	pop r13
@@ -1421,13 +1419,19 @@ tsasm_parse:
 	mov r15, rdi
 	mov qword ptr [r15+C_SAVEDRSP], rsp
 	mov qword ptr [r15+C_RESULT], r8
-	.irp off, 0, 16, 32, 48, 64, 80, 96
+	.irp off, 0, 16, 32, 48, 64, 80, 96, 112
 	movdqu xmm0, xmmword ptr [rsi + \off]
 	movdqu xmmword ptr [r15 + C_LANG + \off], xmm0
 	.endr
 	mov rsi, rdx
 	mov rdx, rcx
-	cmp qword ptr [r15+C_MEMUSED], RETAIN_BYTES   # drop what a huge earlier file left behind
+	mov rax, rdx                        # keep buffers up to max(limit / 8, 256 * len): a big input
+	shl rax, RETAIN_SHIFT               # reuses what the last big input grew, and a small one
+	mov r8, qword ptr [r15+C_MEMLIMIT]  # drops it (a wrapped shift only frees early)
+	shr r8, RETAIN_LIMIT_SHIFT
+	cmp rax, r8
+	cmovb rax, r8
+	cmp qword ptr [r15+C_MEMUSED], rax
 	jbe 1f
 	push rsi
 	push rdx
@@ -1460,7 +1464,7 @@ tsasm_parse:
 	mov dword ptr [r15+C_TOKVALID], 0
 	mov dword ptr [r15+C_LASTPOS], 0
 	mov dword ptr [r15+C_CAPHIT], 0
-	mov dword ptr [r15+C_NEXTGID], 0
+	mov qword ptr [r15+C_NEXTGID], 0    # and C_GLIVE
 	# node 0: zeroed stack-base node
 	ALLOC_NODE eax
 	mov r8, qword ptr [r15+C_NODES]
@@ -1579,6 +1583,7 @@ tsasm_parse:
 	mov eax, dword ptr [r15+C_NEXTGID]
 	mov dword ptr [r13+V_NGID], eax
 1:	mov dword ptr [r12+V_NGID], eax
+	or dword ptr [r15+C_GLIVE], 1
 .Lcd_jnext:
 	inc ebp
 	jmp .Lcd_j
@@ -1586,6 +1591,12 @@ tsasm_parse:
 	inc ebx
 	jmp .Lcd_i
 .Lcd_cap:                               # groups not re-formed this condense have split
+	mov eax, dword ptr [r15+C_GLIVE]
+	test eax, eax                       # no group now or before: every id is already 0
+	jz .Lcd_capcheck
+	add eax, eax
+	and eax, 2
+	mov dword ptr [r15+C_GLIVE], eax
 	mov ecx, dword ptr [r15+C_NV]
 	lea r8, [r15 + C_VERS]
 	jmp 2f

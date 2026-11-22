@@ -1,0 +1,8 @@
+mtspeed_old median=1.223s MB/s=73.8 min=1.212 max=1.226 runs=5 u=7.30 s=0.11 f=39466 
+test/mtspeed median=1.236s MB/s=73.0 min=1.220 max=1.249 runs=5 u=7.43 s=0.10 f=39474 
+mtspeed_old median=1.196s MB/s=75.5 min=1.192 max=1.197 runs=5 u=7.18 s=0.11 f=39462 
+test/mtspeed median=1.226s MB/s=73.7 min=1.221 max=1.230 runs=5 u=7.36 s=0.10 f=39474 
+mtspeed_old median=1.194s MB/s=75.6 min=1.191 max=1.197 runs=5 u=7.18 s=0.10 f=39465 
+test/mtspeed median=1.220s MB/s=74.0 min=1.218 max=1.229 runs=5 u=7.34 s=0.10 f=39475 
+mtspeed_old median=1.198s MB/s=75.4 min=1.196 max=1.201 runs=5 u=7.19 s=0.10 f=39461 
+test/mtspeed median=1.229s MB/s=73.4 min=1.217 max=1.234 runs=5 u=7.37 s=0.10 f=39482 

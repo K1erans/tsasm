@@ -205,6 +205,9 @@ for s in range(TOTAL_SYMS):
     info.append((1 if v else 0) | (2 if n else 0))
 emit_array('tsg_symbol_flags', '.byte', info, 32)
 emit_array('tsg_public_symbol', '.short', [public_map.get(s, s) for s in range(TOTAL_SYMS)])
+# output word per symbol for p_emit: public symbol | named << 16 | visible << 31
+emit_array('tsg_symbol_out', '.long', [public_map.get(s, s) | (info[s] & 2) << 15 | (info[s] & 1) << 31
+                                       for s in range(TOTAL_SYMS)])
 # alias sequences padded to 16 entries per production for shift-indexing
 ALIAS_STRIDE = 16
 assert MAX_ALIAS_SEQUENCE_LENGTH <= ALIAS_STRIDE
@@ -805,6 +808,7 @@ D.append('\t.quad ' + ', '.join(['tsg_parse_table', 'tsg_actions', 'tsg_lex_stat
                                 'tsg_reserved_bits', 'tsg_symbol_flags', 'tsg_public_symbol', 'tsg_alias_seq',
                                 'tsg_symbol_names', 'tsl_lex_main', 'tsl_lex_keyword' if HAS_KW else '0']))
 D.append('\t.long %d, %d, %d, %d, %d, 0' % (SYMBOL_COUNT, TOTAL_SYMS, WORD, RWORDS, TOKEN_COUNT))
+D.append('\t.quad tsg_symbol_out, 0')
 D += ['\t.text', '\t.globl tsasm_language_%s' % NAME, '\t.type tsasm_language_%s, @function' % NAME,
       'tsasm_language_%s:' % NAME, '\tlea rax, [rip + tsg_language]', '\tret',
       '\t.size tsasm_language_%s, .-tsasm_language_%s' % (NAME, NAME),

@@ -17,7 +17,8 @@
 //     the default limit is re-run with a 6 GiB limit, which must give the expected class
 //     (inputs >= 8 MB may stay -3); GLR-heavy families may return -3 at any limit.
 //  2. Retention: after a parse that needs hundreds of MB, then a small parse, malloc in-use
-//     bytes (mallinfo2 uordblks + hblkhd) fall back below baseline + 64 MiB + 4 MiB.
+//     bytes (mallinfo2 uordblks + hblkhd) fall back below baseline + 128 MiB + 4 MiB (an eighth
+//     of the default memory limit, the retention cap in tsasm.h).
 //  3. Threads: a single-threaded reference (hash of the node array, or the error code) for
 //     every file in the list, then N threads for S seconds checking every parse against it,
 //     with roles: persistent parser, parser per file, random memory limits, and random
@@ -440,8 +441,8 @@ static void *run_retain(void *arg) {
   tsasm_parser_free(p);
   double after_free = inuse_bytes();
   res->got = r;
-  double limit = 64 * MiB + 4 * MiB;
-  printf("  retention: baseline %.2f MiB, after %.0f MB parse %.1f MiB, after small parse %.2f MiB (limit baseline+68), after free %.2f MiB\n",
+  double limit = TSASM_DEFAULT_MEMORY_LIMIT / 8 + 4 * MiB;
+  printf("  retention: baseline %.2f MiB, after %.0f MB parse %.1f MiB, after small parse %.2f MiB (limit baseline+132), after free %.2f MiB\n",
          base / MiB, big.len / 1e6, after_big / MiB, after_small / MiB, after_free / MiB);
   if (r <= 0 || r2 <= 0) { res->pass = 0; note(res, "parses failed: %ld %ld", (long)r, (long)r2); }
   if (after_big - base < 200 * MiB) { res->pass = 0; note(res, "big parse used only %.0f MiB, not a test", (after_big - base) / MiB); }
