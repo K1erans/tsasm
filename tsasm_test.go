@@ -24,13 +24,16 @@ func parser(t testing.TB) *Parser {
 	return p
 }
 
-// shape writes the tree as type[start,end) {children}, quoting anonymous
-// nodes.
+// shape writes the tree as field:type[start,end) {children}, quoting
+// anonymous nodes.
 func shape(l *Language, nodes []Node) string {
 	var b strings.Builder
 	var write func(i int32) int32
 	write = func(i int32) int32 {
 		n := nodes[i]
+		if n.Field != 0 {
+			fmt.Fprintf(&b, "%s:", l.FieldName(n.Field))
+		}
 		if n.Named != 0 {
 			fmt.Fprintf(&b, "%s[%d,%d)", l.SymbolName(n.Symbol), n.Start, n.End)
 		} else {
@@ -60,10 +63,14 @@ func TestLanguages(t *testing.T) {
 	if Lookup("python") != nil {
 		t.Error("Lookup(python) isn't nil")
 	}
+	fields := map[string]int{"go": 35, "c": 39, "java": 40, "json": 2}
 	for _, name := range Languages() {
 		l := Lookup(name)
 		if l.Name() != name || l.SymbolCount() < 10 || l.SymbolName(uint16(l.SymbolCount())) != "" {
 			t.Errorf("%s: name %q, %d symbols, out-of-range name %q", name, l.Name(), l.SymbolCount(), l.SymbolName(uint16(l.SymbolCount())))
+		}
+		if n := l.FieldCount(); n != fields[name] || l.FieldName(0) != "" || l.FieldName(1) == "" || l.FieldName(uint8(n)) == "" || l.FieldName(uint8(n+1)) != "" {
+			t.Errorf("%s: %d fields, names %q %q %q %q", name, n, l.FieldName(0), l.FieldName(1), l.FieldName(uint8(n)), l.FieldName(uint8(n+1)))
 		}
 	}
 }
@@ -71,10 +78,10 @@ func TestLanguages(t *testing.T) {
 func TestParseGivesTheTree(t *testing.T) {
 	p := parser(t)
 	for _, tc := range []struct{ lang, src, want string }{
-		{"json", `{"a": [1, 2]}`, `document[0,13) {object[0,13) {"{"[0,1) pair[1,12) {string[1,4) {"\""[1,2) string_content[2,3) "\""[3,4)} ":"[4,5) array[6,12) {"["[6,7) number[7,8) ","[8,9) number[10,11) "]"[11,12)}} "}"[12,13)}}`},
-		{"go", "package p\n", `source_file[0,10) {package_clause[0,9) {"package"[0,7) package_identifier[8,9)}}`},
-		{"c", "int x;\n", `translation_unit[0,7) {declaration[0,6) {primitive_type[0,3) identifier[4,5) ";"[5,6)}}`},
-		{"java", "class A {}\n", `program[0,11) {class_declaration[0,10) {"class"[0,5) identifier[6,7) class_body[8,10) {"{"[8,9) "}"[9,10)}}}`},
+		{"json", `{"a": [1, 2]}`, `document[0,13) {object[0,13) {"{"[0,1) pair[1,12) {key:string[1,4) {"\""[1,2) string_content[2,3) "\""[3,4)} ":"[4,5) value:array[6,12) {"["[6,7) number[7,8) ","[8,9) number[10,11) "]"[11,12)}} "}"[12,13)}}`},
+		{"go", "package p\nfunc f(a int) {}\n", `source_file[0,27) {package_clause[0,9) {"package"[0,7) package_identifier[8,9)} function_declaration[10,26) {"func"[10,14) name:identifier[15,16) parameters:parameter_list[16,23) {"("[16,17) parameter_declaration[17,22) {name:identifier[17,18) type:type_identifier[19,22)} ")"[22,23)} body:block[24,26) {"{"[24,25) "}"[25,26)}}}`},
+		{"c", "int x;\n", `translation_unit[0,7) {declaration[0,6) {type:primitive_type[0,3) declarator:identifier[4,5) ";"[5,6)}}`},
+		{"java", "class A {}\n", `program[0,11) {class_declaration[0,10) {"class"[0,5) name:identifier[6,7) body:class_body[8,10) {"{"[8,9) "}"[9,10)}}}`},
 	} {
 		l := Lookup(tc.lang)
 		nodes, err := p.Parse(l, []byte(tc.src))

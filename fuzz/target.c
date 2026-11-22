@@ -49,7 +49,7 @@ static void check_tree(const TsasmNode *t, int64_t n, uint64_t len) {
   CHECK(t[0].parent == -1);
   for (int64_t i = 0; i < n; i++) {
     CHECK(t[i].symbol < nsym);
-    CHECK(t[i].named <= 1 && t[i].pad == 0);
+    CHECK(t[i].named <= 1 && t[i].field <= tsasm_language_field_count(lang));
     CHECK(t[i].start_byte <= t[i].end_byte && t[i].end_byte <= len);
     if (i == 0) continue;
     int32_t p = t[i].parent;

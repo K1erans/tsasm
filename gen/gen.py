@@ -3,8 +3,8 @@
 
 Usage: gen.py path/to/parser.c <name> outdir
 
-Emits outdir/lang_<name>.s (GNU as, intel syntax): parse tables, metadata, alias sequences, symbol
-names, ts_lex / ts_lex_keywords translated into assembly state machines, and the language
+Emits outdir/lang_<name>.s (GNU as, intel syntax): parse tables, metadata, alias sequences, field
+ids, symbol and field names, ts_lex / ts_lex_keywords translated into assembly state machines, and the language
 descriptor. Its only global symbol is `const TsasmLanguage *tsasm_language_<name>(void)`; the
 descriptor layout is the L_* offsets in src/parser.s.
 """
@@ -87,6 +87,38 @@ alias_seq = [[0] * MAX_ALIAS_SEQUENCE_LENGTH for _ in range(PRODUCTION_ID_COUNT)
 for pid, blk in re.findall(r'\[(\d+)\] = \{([^}]*)\}', body_of(r'ts_alias_sequences\[PRODUCTION_ID_COUNT\]')):
     for i, a in re.findall(r'\[(\d+)\] = (\w+)', blk):
         alias_seq[int(pid)][int(i)] = num(a)
+
+# ---- fields -----------------------------------------------------------------
+# field_seq[production][structural child index]: the child's field id, as C tree-sitter's
+# ts_tree_cursor_current_field_id reads it at that level (the first entry that isn't inherited).
+FIELD_COUNT = define('FIELD_COUNT')
+assert FIELD_COUNT < 256, "nodes store the field id in one byte"
+field_names = [None] * (FIELD_COUNT + 1)
+field_seq = [[0] * MAX_ALIAS_SEQUENCE_LENGTH for _ in range(PRODUCTION_ID_COUNT)]
+if FIELD_COUNT:
+    field_id = {name: int(v) for name, v in
+                re.findall(r'^\s+(\w+) = (\d+),', body_of(r'enum ts_field_identifiers \{'), re.M)}
+    for k, v in re.findall(r'\[(\w+)\] = ("(?:[^"\\]|\\.)*"),', body_of(r'ts_field_names\[\] = \{')):
+        field_names[field_id[k]] = v
+    # entries: '[N] =' then entries at N, N+1, ...: '{field_x, child}' or '{field_x, child, .inherited = true}'
+    entries = {}
+    at = 0
+    for idx, fname, child, inherited in re.findall(r'\[(\d+)\] =|\{(\w+), (\d+)(, \.inherited = true)?\}',
+                                                   body_of(r'ts_field_map_entries\[\] = \{')):
+        if idx:
+            at = int(idx)
+            continue
+        entries[at] = (field_id[fname], int(child), bool(inherited))
+        at += 1
+    slices = body_of(r'ts_(?:field_)?map_slices\[PRODUCTION_ID_COUNT\] = \{')  # TSMapSlice from ABI 15
+    for pid, blk in re.findall(r'\[(\d+)\] = \{([^}]*)\}', slices):
+        d = dict(re.findall(r'\.(\w+) = (\d+)', blk))
+        for e in range(int(d['index']), int(d['index']) + int(d['length'])):
+            f, child, inherited = entries[e]
+            assert child < MAX_ALIAS_SEQUENCE_LENGTH, (pid, child)
+            if not inherited and not field_seq[int(pid)][child]:
+                field_seq[int(pid)][child] = f
+assert all(field_names[1:]), "every field id has a name"
 
 # ---- lex modes + reserved words -------------------------------------------
 lex_state = [0] * STATE_COUNT
@@ -212,8 +244,13 @@ emit_array('tsg_symbol_out', '.long', [public_map.get(s, s) | (info[s] & 2) << 1
 ALIAS_STRIDE = 16
 assert MAX_ALIAS_SEQUENCE_LENGTH <= ALIAS_STRIDE
 emit_array('tsg_alias_seq', '.short', [v for row in alias_seq for v in row + [0] * (ALIAS_STRIDE - len(row))])
+emit_array('tsg_field_seq', '.byte', [v for row in field_seq for v in row + [0] * (ALIAS_STRIDE - len(row))], 32)
 w('\t.section .data.rel.ro,"aw"')
 w('\t.balign 8')
+w('\t.globl tsg_field_names')
+w('tsg_field_names:')
+for f in range(FIELD_COUNT + 1):
+    w('\t.quad tsg_field_name_%d' % f)
 w('\t.globl tsg_symbol_names')
 w('tsg_symbol_names:')
 for s in range(TOTAL_SYMS):
@@ -221,6 +258,8 @@ for s in range(TOTAL_SYMS):
 w('\t.section .rodata')
 for s in range(TOTAL_SYMS):
     w('tsg_name_%d: .asciz %s' % (s, names.get(s, '""')))
+for f in range(FIELD_COUNT + 1):
+    w('tsg_field_name_%d: .asciz %s' % (f, field_names[f] or '""'))
 TABLES = out
 
 # word token for keyword extraction (ts_parser__lex); 0 when the grammar has none, like C
@@ -808,7 +847,8 @@ D.append('\t.quad ' + ', '.join(['tsg_parse_table', 'tsg_actions', 'tsg_lex_stat
                                 'tsg_reserved_bits', 'tsg_symbol_flags', 'tsg_public_symbol', 'tsg_alias_seq',
                                 'tsg_symbol_names', 'tsl_lex_main', 'tsl_lex_keyword' if HAS_KW else '0']))
 D.append('\t.long %d, %d, %d, %d, %d, 0' % (SYMBOL_COUNT, TOTAL_SYMS, WORD, RWORDS, TOKEN_COUNT))
-D.append('\t.quad tsg_symbol_out, 0')
+D.append('\t.quad tsg_symbol_out, tsg_field_seq, tsg_field_names')
+D.append('\t.long %d, 0' % FIELD_COUNT)
 D += ['\t.text', '\t.globl tsasm_language_%s' % NAME, '\t.type tsasm_language_%s, @function' % NAME,
       'tsasm_language_%s:' % NAME, '\tlea rax, [rip + tsg_language]', '\tret',
       '\t.size tsasm_language_%s, .-tsasm_language_%s' % (NAME, NAME),

@@ -47,10 +47,11 @@ tsasm_parser_free(p);
 - **Languages are read-only.** A `TsasmLanguage` is a table descriptor in `.data.rel.ro`, shared
   by every thread. Any parser can parse any language, and switching costs nothing.
 - **Output.** `TsasmNode` is 16 bytes: public `symbol` (after alias resolution, as
-  `ts_node_symbol`), `named`, `start_byte`, `end_byte`, `parent` (index into the same array,
-  -1 for the root). Nodes are the visible ones (named and anonymous, as tree-sitter's
+  `ts_node_symbol`), `named`, `field`, `start_byte`, `end_byte`, `parent` (index into the same
+  array, -1 for the root). Nodes are the visible ones (named and anonymous, as tree-sitter's
   `ts_node_child` walk shows them) in pre-order. `tsasm_language_symbol_name()` gives the same
-  strings as `ts_node_type`.
+  strings as `ts_node_type`. `field` is the node's grammar field id (0 for none) as
+  `ts_tree_cursor_current_field_id` gives it, and `tsasm_language_field_name()` names it.
 - **Errors.** `TSASM_ERR_SYNTAX` (-1): the input is not in the language. There is no error
   recovery. `TSASM_ERR_LIMIT` (-3): a budget ran out. `TSASM_ERR_NOMEM` (-4): the allocator
   failed. After any error the parser stays usable and `*nodes` is NULL.
@@ -79,7 +80,8 @@ p, err := tsasm.NewParser() // one per goroutine
 defer p.Close()
 nodes, err := p.Parse(tsasm.Lookup("go"), src) // tsasm.ErrSyntax, ErrLimit or ErrNoMem
 for _, n := range nodes { // valid until p's next Parse or Close
-	fmt.Println(tsasm.Lookup("go").SymbolName(n.Symbol), n.Start, n.End, n.Parent)
+	l := tsasm.Lookup("go")
+	fmt.Println(l.FieldName(n.Field), l.SymbolName(n.Symbol), n.Start, n.End, n.Parent)
 }
 ```
 
@@ -111,6 +113,12 @@ Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the par
   back above the new node. Accept splices the root's children with leading and trailing extras.
 - **Output.** Hidden nodes are flattened. Aliases come from the parent's production alias
   sequence, indexed by structural child position. An alias makes a hidden node visible.
+- **Fields.** `gen.py` turns each production's field map into a field id per structural child
+  position (the first entry that isn't inherited, as the C cursor reads it). The output walk
+  gives a node the field at its own position, or else the one its deepest hidden ancestor got,
+  which each hidden node's frame passes down; extras get none. It costs about 1-2% of parse
+  time (`test/mtspeed`, GOROOT: one thread 1.032-1.036 s per pass against 1.016-1.023,
+  20 threads 0.090 s against 0.088).
 - **Token cache.** A single-entry cache follows the C runtime's `can_reuse_first_leaf` rules,
   which matters when several versions lex at the same position.
 - **GLR.** A port of C tree-sitter's graph-structured stack (`stack.c`) and GLR driver
@@ -132,7 +140,7 @@ Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the par
 
 ### Parity
 
-An exact match of the full node arrays (symbol, named, start, end, parent) against C
+An exact match of the full node arrays (symbol, named, field, start, end, parent) against C
 tree-sitter v0.25.0's cursor walk, over files C parses without errors. `scripts/parity.sh`
 reruns all four and fails on any difference from `results/parity_<lang>.txt`.
 

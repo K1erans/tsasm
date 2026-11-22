@@ -42,9 +42,11 @@ int main(int argc, char **argv) {
         if (verbose) {
           printf("MISMATCH %s ref=%ld impl=%ld\n", path, (long)r, (long)m);
           if (k < r && k < m)
-            printf("  at %ld: ref %s(%d) n%d [%u,%u] p%d | impl %s(%d) n%d [%u,%u] p%d\n", (long)k,
-                   tsasm_language_symbol_name(lang, a[k].symbol), a[k].symbol, a[k].named, a[k].start_byte, a[k].end_byte, a[k].parent,
-                   tsasm_language_symbol_name(lang, b[k].symbol), b[k].symbol, b[k].named, b[k].start_byte, b[k].end_byte, b[k].parent);
+            printf("  at %ld: ref %s(%d) n%d f%s [%u,%u] p%d | impl %s(%d) n%d f%s [%u,%u] p%d\n", (long)k,
+                   tsasm_language_symbol_name(lang, a[k].symbol), a[k].symbol, a[k].named, tsasm_language_field_name(lang, a[k].field),
+                   a[k].start_byte, a[k].end_byte, a[k].parent,
+                   tsasm_language_symbol_name(lang, b[k].symbol), b[k].symbol, b[k].named, tsasm_language_field_name(lang, b[k].field),
+                   b[k].start_byte, b[k].end_byte, b[k].parent);
         }
       }
     }

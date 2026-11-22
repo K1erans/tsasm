@@ -22,7 +22,7 @@ int64_t ref_parse(const TSLanguage *lang, const uint8_t *src, uint64_t len, Tsas
     TSNode node = ts_tree_cursor_current_node(&cur);
     if ((uint64_t)n >= cap) { overflow = 1; break; }
     int64_t me = n++;
-    out[me] = (TsasmNode){ts_node_symbol(node), ts_node_is_named(node), 0, ts_node_start_byte(node), ts_node_end_byte(node), stack[depth]};
+    out[me] = (TsasmNode){ts_node_symbol(node), ts_node_is_named(node), ts_tree_cursor_current_field_id(&cur), ts_node_start_byte(node), ts_node_end_byte(node), stack[depth]};
     if (ts_tree_cursor_goto_first_child(&cur)) {
       if (++depth == scap) stack = realloc(stack, (scap *= 2) * sizeof *stack);
       stack[depth] = (int32_t)me;

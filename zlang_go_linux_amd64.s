@@ -10336,8 +10336,103 @@ tsg_go_alias_seq:
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.balign 64
+tsg_go_field_seq:
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,25,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 22,21,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 13,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 31,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 31,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,25,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,25,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,20,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,20,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,27,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,8,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,23,0,20,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 18,22,28,0,0,0,0,0,0,0,0,0,0,0,0,0,18,0,28,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 21,0,12,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 13,32,3,0,0,0,0,0,0,0,0,0,0,0,0,0,20,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,20,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,20,33,24,0,0,0,0,0,0,0,0,0,0,0,0,0,20,24,27,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,20,24,4,0,0,0,0,0,0,0,0,0,0,0,0,0,26,20,24,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,27,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,19,0,10,0,0,0,0,0,0,0,0,0,0,0,0,20,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,33,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,30,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 31,30,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,21,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 21,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,14,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,0,35,0,0,0,0,0,0,0,0,0,0,0,0,20,20,0,35,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,0,0,35,0,0,0,0,0,0,0,0,0,0,0,0,20,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,33,24,27,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,20,33,24,4,0,0,0,0,0,0,0,0,0,0,0,0,20,24,27,4,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,26,20,24,27,0,0,0,0,0,0,0,0,0,0,0,0,26,20,24,4,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,33,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,31,30,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,31,30,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,31,30,0,0,0,0,0,0,0,0,0,0,0,0,0,20,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,24,27,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,16,0,35,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,15,0,8,9,0,0,0,0,0,0,0,0,0,0,0,0,8,9,0,2,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,8,0,34,0,0,0,0,0,0,0,0,0,0,0,0,18,0,0,28,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 15,0,0,34,0,0,0,0,0,0,0,0,0,0,0,0,15,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 16,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 21,0,0,11,0,0,0,0,0,0,0,0,0,0,0,0,21,0,29,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,20,31,0,35,0,0,0,0,0,0,0,0,0,0,0,20,0,31,0,35,0,0,0,0,0,0,0,0,0,0,0
+	.byte 20,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,33,24,27,4,0,0,0,0,0,0,0,0,0,0
+	.byte 0,26,20,24,27,4,0,0,0,0,0,0,0,0,0,0,20,0,31,30,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 15,0,8,0,34,0,0,0,0,0,0,0,0,0,0,0,0,15,0,35,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 35,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,29,0,11,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,15,0,8,9,0,2,0,0,0,0,0,0,0,0,0,0,31,31,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 21,0,0,11,0,5,0,0,0,0,0,0,0,0,0,0,1,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 15,0,35,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,29,0,11,0,5,0,0,0,0,0,0,0,0,0
+	.byte 15,0,1,0,35,0,0,0,0,0,0,0,0,0,0,0
 	.section .data.rel.ro,"aw"
 	.balign 8
+tsg_go_field_names:
+	.quad tsg_go_field_name_0
+	.quad tsg_go_field_name_1
+	.quad tsg_go_field_name_2
+	.quad tsg_go_field_name_3
+	.quad tsg_go_field_name_4
+	.quad tsg_go_field_name_5
+	.quad tsg_go_field_name_6
+	.quad tsg_go_field_name_7
+	.quad tsg_go_field_name_8
+	.quad tsg_go_field_name_9
+	.quad tsg_go_field_name_10
+	.quad tsg_go_field_name_11
+	.quad tsg_go_field_name_12
+	.quad tsg_go_field_name_13
+	.quad tsg_go_field_name_14
+	.quad tsg_go_field_name_15
+	.quad tsg_go_field_name_16
+	.quad tsg_go_field_name_17
+	.quad tsg_go_field_name_18
+	.quad tsg_go_field_name_19
+	.quad tsg_go_field_name_20
+	.quad tsg_go_field_name_21
+	.quad tsg_go_field_name_22
+	.quad tsg_go_field_name_23
+	.quad tsg_go_field_name_24
+	.quad tsg_go_field_name_25
+	.quad tsg_go_field_name_26
+	.quad tsg_go_field_name_27
+	.quad tsg_go_field_name_28
+	.quad tsg_go_field_name_29
+	.quad tsg_go_field_name_30
+	.quad tsg_go_field_name_31
+	.quad tsg_go_field_name_32
+	.quad tsg_go_field_name_33
+	.quad tsg_go_field_name_34
+	.quad tsg_go_field_name_35
 tsg_go_symbol_names:
 	.quad tsg_go_name_0
 	.quad tsg_go_name_1
@@ -10778,6 +10873,42 @@ tsg_go_name_215: .asciz "label_name"
 tsg_go_name_216: .asciz "package_identifier"
 tsg_go_name_217: .asciz "type_constraint"
 tsg_go_name_218: .asciz "type_identifier"
+tsg_go_field_name_0: .asciz ""
+tsg_go_field_name_1: .asciz "alias"
+tsg_go_field_name_2: .asciz "alternative"
+tsg_go_field_name_3: .asciz "arguments"
+tsg_go_field_name_4: .asciz "body"
+tsg_go_field_name_5: .asciz "capacity"
+tsg_go_field_name_6: .asciz "channel"
+tsg_go_field_name_7: .asciz "communication"
+tsg_go_field_name_8: .asciz "condition"
+tsg_go_field_name_9: .asciz "consequence"
+tsg_go_field_name_10: .asciz "element"
+tsg_go_field_name_11: .asciz "end"
+tsg_go_field_name_12: .asciz "field"
+tsg_go_field_name_13: .asciz "function"
+tsg_go_field_name_14: .asciz "index"
+tsg_go_field_name_15: .asciz "initializer"
+tsg_go_field_name_16: .asciz "key"
+tsg_go_field_name_17: .asciz "label"
+tsg_go_field_name_18: .asciz "left"
+tsg_go_field_name_19: .asciz "length"
+tsg_go_field_name_20: .asciz "name"
+tsg_go_field_name_21: .asciz "operand"
+tsg_go_field_name_22: .asciz "operator"
+tsg_go_field_name_23: .asciz "package"
+tsg_go_field_name_24: .asciz "parameters"
+tsg_go_field_name_25: .asciz "path"
+tsg_go_field_name_26: .asciz "receiver"
+tsg_go_field_name_27: .asciz "result"
+tsg_go_field_name_28: .asciz "right"
+tsg_go_field_name_29: .asciz "start"
+tsg_go_field_name_30: .asciz "tag"
+tsg_go_field_name_31: .asciz "type"
+tsg_go_field_name_32: .asciz "type_arguments"
+tsg_go_field_name_33: .asciz "type_parameters"
+tsg_go_field_name_34: .asciz "update"
+tsg_go_field_name_35: .asciz "value"
 # generated by gen.py -- do not edit
 	.intel_syntax noprefix
 
@@ -18410,7 +18541,8 @@ tsl_go_ascii_sym_rune_literal_character_set_1:
 tsg_go_language:
 	.quad tsg_go_parse_table, tsg_go_actions, tsg_go_lex_state, tsg_go_reserved_set, tsg_go_reserved_bits, tsg_go_symbol_flags, tsg_go_public_symbol, tsg_go_alias_seq, tsg_go_symbol_names, tsl_go_lex_main, tsl_go_lex_keyword
 	.long 214, 219, 1, 2, 95, 0
-	.quad tsg_go_symbol_out, 0
+	.quad tsg_go_symbol_out, tsg_go_field_seq, tsg_go_field_names
+	.long 35, 0
 	.text
 	.globl tsasm_language_go
 	.type tsasm_language_go, @function

@@ -23729,8 +23729,117 @@ tsg_c_alias_seq:
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	.short 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.balign 64
+tsg_c_field_seq:
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 12,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,26,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 24,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 2,26,0,0,0,0,0,0,0,0,0,0,0,0,0,0,16,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,29,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 12,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,36,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,39,5,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,8,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,7,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 22,26,32,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,5,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 10,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 2,26,14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,36,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,36,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,39,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 36,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,36,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0,36,10,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 30,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,37,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,5,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,24,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,7,8,1,0,0,0,0,0,0,0,0,0,0,0,0,19,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,36,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,5,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,5,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 2,0,18,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,28,39,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,1,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,24,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,33,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,36,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 24,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,0,37,5,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,24,5,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,5,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,38,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 19,0,38,0,0,0,0,0,0,0,0,0,0,0,0,0,19,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,25,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,4,27,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,10,0,0,0,0,0,0,0,0,0,0,0,0,0,10,10,10,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,33,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,5,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,10,0,5,0,0,0,0,0,0,0,0,0,0,0,7,0,8,0,1,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,7,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,33,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,5,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,38,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 19,7,0,38,0,0,0,0,0,0,0,0,0,0,0,0,19,0,0,38,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 19,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,36,0,23,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,25,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,27,20,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,4,27,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,10,10,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,33,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,10,10,10,0,0,0,0,0,0,0,0,0,0,0,0,11,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 11,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0,19,0,7,0,38,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,4,27,20,6,0,0,0,0,0,0,0,0,0,0,0,0,0,4,27,20,0,0,0,0,0,0,0,0,0,0
+	.byte 9,0,39,0,0,0,0,0,0,0,0,0,0,0,0,0,0,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,21,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,27,20,6,17,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,4,27,20,6,0,0,0,0,0,0,0,0,0,0,34,0,13,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,21,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,0,0,4,27,20,6,17,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	.byte 0,35,0,9,0,39,0,0,0,0,0,0,0,0,0,0
 	.section .data.rel.ro,"aw"
 	.balign 8
+tsg_c_field_names:
+	.quad tsg_c_field_name_0
+	.quad tsg_c_field_name_1
+	.quad tsg_c_field_name_2
+	.quad tsg_c_field_name_3
+	.quad tsg_c_field_name_4
+	.quad tsg_c_field_name_5
+	.quad tsg_c_field_name_6
+	.quad tsg_c_field_name_7
+	.quad tsg_c_field_name_8
+	.quad tsg_c_field_name_9
+	.quad tsg_c_field_name_10
+	.quad tsg_c_field_name_11
+	.quad tsg_c_field_name_12
+	.quad tsg_c_field_name_13
+	.quad tsg_c_field_name_14
+	.quad tsg_c_field_name_15
+	.quad tsg_c_field_name_16
+	.quad tsg_c_field_name_17
+	.quad tsg_c_field_name_18
+	.quad tsg_c_field_name_19
+	.quad tsg_c_field_name_20
+	.quad tsg_c_field_name_21
+	.quad tsg_c_field_name_22
+	.quad tsg_c_field_name_23
+	.quad tsg_c_field_name_24
+	.quad tsg_c_field_name_25
+	.quad tsg_c_field_name_26
+	.quad tsg_c_field_name_27
+	.quad tsg_c_field_name_28
+	.quad tsg_c_field_name_29
+	.quad tsg_c_field_name_30
+	.quad tsg_c_field_name_31
+	.quad tsg_c_field_name_32
+	.quad tsg_c_field_name_33
+	.quad tsg_c_field_name_34
+	.quad tsg_c_field_name_35
+	.quad tsg_c_field_name_36
+	.quad tsg_c_field_name_37
+	.quad tsg_c_field_name_38
+	.quad tsg_c_field_name_39
 tsg_c_symbol_names:
 	.quad tsg_c_name_0
 	.quad tsg_c_name_1
@@ -24459,6 +24568,46 @@ tsg_c_name_359: .asciz "string_literal_repeat1"
 tsg_c_name_360: .asciz "field_identifier"
 tsg_c_name_361: .asciz "statement_identifier"
 tsg_c_name_362: .asciz "type_identifier"
+tsg_c_field_name_0: .asciz ""
+tsg_c_field_name_1: .asciz "alternative"
+tsg_c_field_name_2: .asciz "argument"
+tsg_c_field_name_3: .asciz "arguments"
+tsg_c_field_name_4: .asciz "assembly_code"
+tsg_c_field_name_5: .asciz "body"
+tsg_c_field_name_6: .asciz "clobbers"
+tsg_c_field_name_7: .asciz "condition"
+tsg_c_field_name_8: .asciz "consequence"
+tsg_c_field_name_9: .asciz "constraint"
+tsg_c_field_name_10: .asciz "declarator"
+tsg_c_field_name_11: .asciz "designator"
+tsg_c_field_name_12: .asciz "directive"
+tsg_c_field_name_13: .asciz "end"
+tsg_c_field_name_14: .asciz "field"
+tsg_c_field_name_15: .asciz "filter"
+tsg_c_field_name_16: .asciz "function"
+tsg_c_field_name_17: .asciz "goto_labels"
+tsg_c_field_name_18: .asciz "index"
+tsg_c_field_name_19: .asciz "initializer"
+tsg_c_field_name_20: .asciz "input_operands"
+tsg_c_field_name_21: .asciz "label"
+tsg_c_field_name_22: .asciz "left"
+tsg_c_field_name_23: .asciz "member"
+tsg_c_field_name_24: .asciz "name"
+tsg_c_field_name_25: .asciz "operand"
+tsg_c_field_name_26: .asciz "operator"
+tsg_c_field_name_27: .asciz "output_operands"
+tsg_c_field_name_28: .asciz "parameters"
+tsg_c_field_name_29: .asciz "path"
+tsg_c_field_name_30: .asciz "prefix"
+tsg_c_field_name_31: .asciz "register"
+tsg_c_field_name_32: .asciz "right"
+tsg_c_field_name_33: .asciz "size"
+tsg_c_field_name_34: .asciz "start"
+tsg_c_field_name_35: .asciz "symbol"
+tsg_c_field_name_36: .asciz "type"
+tsg_c_field_name_37: .asciz "underlying_type"
+tsg_c_field_name_38: .asciz "update"
+tsg_c_field_name_39: .asciz "value"
 # generated by gen.py -- do not edit
 	.intel_syntax noprefix
 
@@ -43049,7 +43198,8 @@ tsl_c_ascii_sym_number_literal_character_set_13:
 tsg_c_language:
 	.quad tsg_c_parse_table, tsg_c_actions, tsg_c_lex_state, tsg_c_reserved_set, tsg_c_reserved_bits, tsg_c_symbol_flags, tsg_c_public_symbol, tsg_c_alias_seq, tsg_c_symbol_names, tsl_c_lex_main, tsl_c_lex_keyword
 	.long 360, 363, 1, 3, 161, 0
-	.quad tsg_c_symbol_out, 0
+	.quad tsg_c_symbol_out, tsg_c_field_seq, tsg_c_field_names
+	.long 39, 0
 	.text
 	.globl tsasm_language_c
 	.type tsasm_language_c, @function

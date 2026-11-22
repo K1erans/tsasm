@@ -25,11 +25,14 @@ import (
 	"unsafe"
 )
 
-// Node is one node of a tree: TsasmNode in tsasm.h.
+// Node is one node of a tree: TsasmNode in tsasm.h. Its Field is the one C
+// tree-sitter's tree cursor gives it: the field its parent's production
+// gives it, else the one its nearest hidden ancestors' give them; an extra
+// node, such as a comment, has none.
 type Node struct {
 	Symbol uint16 // the node's type; Language.SymbolName names it
 	Named  uint8  // 1 for a named node, 0 for punctuation and keywords
-	_      uint8
+	Field  uint8  // the node's grammar field, 0 for none; Language.FieldName names it
 	Start  uint32 // byte offset of the node's start
 	End    uint32 // byte offset just past its end
 	Parent int32  // the parent's index in the same array; -1 for the root
@@ -53,9 +56,10 @@ var (
 // Language is a grammar built into the library. It is read-only and can be
 // shared by every goroutine.
 type Language struct {
-	name  string
-	l     *C.TsasmLanguage
-	names []string
+	name   string
+	l      *C.TsasmLanguage
+	names  []string
+	fields []string // by field id, "" for 0
 }
 
 var languages = sync.OnceValue(func() map[string]*Language {
@@ -64,6 +68,10 @@ var languages = sync.OnceValue(func() map[string]*Language {
 		lang := &Language{name: name, l: l, names: make([]string, int(C.tsasm_language_symbol_count(l)))}
 		for i := range lang.names {
 			lang.names[i] = C.GoString(C.tsasm_language_symbol_name(l, C.uint16_t(i)))
+		}
+		lang.fields = make([]string, int(C.tsasm_language_field_count(l))+1)
+		for i := range lang.fields {
+			lang.fields[i] = C.GoString(C.tsasm_language_field_name(l, C.uint8_t(i)))
 		}
 		m[name] = lang
 	}
@@ -99,6 +107,19 @@ func (l *Language) SymbolCount() int { return len(l.names) }
 func (l *Language) SymbolName(s uint16) string {
 	if int(s) < len(l.names) {
 		return l.names[s]
+	}
+	return ""
+}
+
+// FieldCount is the number of grammar fields; field ids run from 1 to it.
+func (l *Language) FieldCount() int { return len(l.fields) - 1 }
+
+// FieldName is the name of field f, as C tree-sitter's
+// ts_language_field_name_for_id gives it, or "" for 0 or an id out of
+// range.
+func (l *Language) FieldName(f uint8) string {
+	if int(f) < len(l.fields) {
+		return l.fields[f]
 	}
 	return ""
 }

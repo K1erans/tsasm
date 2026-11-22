@@ -100,7 +100,10 @@
 	.set L_WORD, 96                     # u32 keyword capture token, 0 if none
 	.set L_RWORDS, 100                  # u32 qwords per reserved word set
 	.set L_SYMBOL_OUT, 112              # u32 [total syms] public symbol | named << 16 | visible << 31
-	.set L_SIZE, 128
+	.set L_FIELD_SEQ, 120               # u8 [productions][16] field id by structural child index
+	.set L_SIZE, 128                    # the part tsasm_parse copies into the context
+	.set L_FIELD_NAMES, 128             # char * [field count + 1], "" for 0
+	.set L_NFIELDS, 136                 # u32 field count
 
 	.set ERR_SYNTAX, -1
 	.set ERR_LIMIT, -3
@@ -2827,7 +2830,9 @@ p_emit:
 	mov qword ptr [r12+4], rax
 	mov dword ptr [r12+12], -1
 	mov r14d, 1                         # n
-	# frame stack
+	# frame stack: u32 tree, u32 next child, u8 structural child index, u8 field the children
+	# inherit (set for a hidden node: C's ts_tree_cursor_current_field_id), u16 0, u32 parent out
+	# index
 	cmp dword ptr [r15+C_ESTKCAP], 0
 	jne 2f
 	mov esi, 1
@@ -2865,39 +2870,51 @@ p_emit:
 	mov eax, esi
 	TREE_OFF rax
 	lea r11, [r8 + rax]                 # child node
-	xor edx, edx                        # alias
+	xor edx, edx                        # alias | field << 24 (an extra has neither)
 	cmp byte ptr [r11+N_EXTRA], 0
 	jne 2f
 	movzx eax, byte ptr [r9+N_PROD]
 	shl eax, 4
-	add eax, dword ptr [rdi+8]
-	inc dword ptr [rdi+8]
-	mov rcx, qword ptr [r15+C_LANG+L_ALIAS_SEQ]
-	movzx edx, word ptr [rcx + rax*2]
-2:	movzx eax, word ptr [r11+N_SYM]
+	movzx ecx, byte ptr [rdi+8]
+	add eax, ecx
+	inc byte ptr [rdi+8]
+	mov rcx, qword ptr [r15+C_LANG+L_FIELD_SEQ]
+	movzx edx, byte ptr [rcx + rax]     # the child's field at this level,
 	test edx, edx
-	cmovnz eax, edx                     # s
+	jnz 6f
+	movzx edx, byte ptr [rdi+9]         # else the deepest one a hidden parent passes down
+6:	shl edx, 24
+	mov rcx, qword ptr [r15+C_LANG+L_ALIAS_SEQ]
+	movzx ecx, word ptr [rcx + rax*2]
+	or edx, ecx
+2:	movzx eax, word ptr [r11+N_SYM]
+	movzx ecx, dx
+	test ecx, ecx
+	cmovnz eax, ecx                     # s
 	mov eax, dword ptr [r13 + rax*4]    # output word, visible in bit 31
 	mov r9d, dword ptr [rdi+12]         # parent out index
 	btr eax, 31
 	jc 3f
-	test edx, edx                       # an aliased node is visible
+	test ecx, ecx                       # an aliased node is visible
 	jz 4f
 3:	cmp r14d, dword ptr [r15+C_OUTCAP]
 	jae .Lem_grow
 .Lem_put:
-	mov rdx, r14
-	shl rdx, 4
-	add rdx, r12
-	mov dword ptr [rdx], eax
+	and edx, 0xff000000
+	or eax, edx                         # the field, in the node's last symbol byte
+	xor edx, edx                        # a visible node's children inherit no field
+	mov rcx, r14
+	shl rcx, 4
+	add rcx, r12
+	mov dword ptr [rcx], eax
 	mov rax, qword ptr [r11+N_START]
-	mov qword ptr [rdx+4], rax
-	mov dword ptr [rdx+12], r9d
+	mov qword ptr [rcx+4], rax
+	mov dword ptr [rcx+12], r9d
 	mov r9d, r14d
 	inc r14
 4:	cmp dword ptr [r11+N_CC], 0
 	je .Lem_loop
-	# push frame (child, 0, 0, parent)
+	# push frame (child, 0, 0, field, parent)
 	lea eax, [rbp+1]
 	cmp eax, dword ptr [r15+C_ESTKCAP]
 	jb 5f
@@ -2910,6 +2927,8 @@ p_emit:
 	shl eax, 4
 	mov dword ptr [rbx + rax], esi
 	mov qword ptr [rbx + rax + 4], 0
+	shr edx, 24
+	mov byte ptr [rbx + rax + 9], dl
 	mov dword ptr [rbx + rax + 12], r9d
 	inc ebp
 	jmp .Lem_loop
@@ -3235,6 +3254,27 @@ tsasm_language_symbol_name:
 	mov rax, qword ptr [rax + rsi*8]
 1:	ret
 	.size tsasm_language_symbol_name, .-tsasm_language_symbol_name
+
+# const char *tsasm_language_field_name(const TsasmLanguage *lang, uint8_t field): "" for 0 or out of range
+	.globl tsasm_language_field_name
+	.type tsasm_language_field_name, @function
+tsasm_language_field_name:
+	movzx esi, sil
+	lea rax, [rip + .Lempty]
+	cmp esi, dword ptr [rdi+L_NFIELDS]
+	ja 1f
+	mov rax, qword ptr [rdi+L_FIELD_NAMES]
+	mov rax, qword ptr [rax + rsi*8]
+1:	ret
+	.size tsasm_language_field_name, .-tsasm_language_field_name
+
+# uint32_t tsasm_language_field_count(const TsasmLanguage *lang): field ids run from 1 to it
+	.globl tsasm_language_field_count
+	.type tsasm_language_field_count, @function
+tsasm_language_field_count:
+	mov eax, dword ptr [rdi+L_NFIELDS]
+	ret
+	.size tsasm_language_field_count, .-tsasm_language_field_count
 
 # uint32_t tsasm_language_symbol_count(const TsasmLanguage *lang): symbols + aliases
 	.globl tsasm_language_symbol_count
