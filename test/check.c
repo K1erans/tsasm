@@ -11,10 +11,19 @@ const char *ref_symbol_name(uint16_t s);
 int64_t model_parse_go(const uint8_t *src, uint64_t len, TsasmNode *out, uint64_t cap);
 extern int model_stat_forks, model_stat_merges, model_stat_maxv;
 typedef int64_t (*fn)(const uint8_t *, uint64_t, TsasmNode *, uint64_t);
+static TsasmParser *P;
+static int64_t asm_parse(const uint8_t *s, uint64_t n, TsasmNode *out, uint64_t cap) {
+  const TsasmNode *r;
+  int64_t m = tsasm_parse_go(P, s, n, &r);
+  if (m > (int64_t)cap) return -2;
+  if (m > 0) memcpy(out, r, m * sizeof *r);
+  return m;
+}
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 int main(int argc, char **argv) {
   // usage: check (model|asm) filelist [verbose]
-  fn impl = strcmp(argv[1], "model") == 0 ? model_parse_go : tsasm_parse_go;
+  P = tsasm_parser_new();
+  fn impl = strcmp(argv[1], "model") == 0 ? model_parse_go : asm_parse;
   FILE *fl = fopen(argv[2], "r");
   int verbose = argc > 3 ? atoi(argv[3]) : 0;
   char path[4096];

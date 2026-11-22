@@ -16,10 +16,11 @@ int main(int argc, char **argv) {
     srcs[n] = malloc(len + 1); if (fread(srcs[n], 1, len, f) != (size_t)len) return 1; fclose(f); lens[n++] = len; total += len;
   }
   uint64_t cap = 1 << 22; TsasmNode *out = malloc(cap * sizeof *out);
+  TsasmParser *p = tsasm_parser_new(); const TsasmNode *tree;
   double best[3] = {1e9, 1e9, 1e9}; long nodes[3] = {0};
   for (int it = 0; it < iters; it++) {
     double t0 = now(); long c = 0;
-    for (int i = 0; i < n; i++) c += tsasm_parse_go(srcs[i], lens[i], out, cap);
+    for (int i = 0; i < n; i++) c += tsasm_parse_go(p, srcs[i], lens[i], &tree);
     double t1 = now(); if (t1 - t0 < best[0]) best[0] = t1 - t0; nodes[0] = c;
     c = 0; for (int i = 0; i < n; i++) c += ref_parse_only(srcs[i], lens[i]);
     double t2 = now(); if (t2 - t1 < best[1]) best[1] = t2 - t1;

@@ -7,6 +7,7 @@ int main(int argc, char **argv) {
   FILE *fl = fopen(argv[1], "r"); char path[4096]; int files = 0; long bad = 0, ok = 0, agree = 0, disagree = 0;
   TsasmNode *a = malloc(16 << 22), *b = malloc(16 << 22);
   srand(1);
+  TsasmParser *p = tsasm_parser_new(); const TsasmNode *an;
   while (fgets(path, sizeof path, fl)) {
     path[strcspn(path, "\n")] = 0; FILE *f = fopen(path, "rb"); if (!f) continue;
     fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
@@ -17,11 +18,11 @@ int main(int argc, char **argv) {
       else if (k == 1) n = len ? rand() % len : 0;                    // truncation
       else if (k == 2) { for (int m = 0; m < 3 && len; m++) t[rand() % len] = rand(); }  // byte flips
       else if (k == 3) { for (long m = 0; m < len; m++) t[m] = rand(); }                  // garbage
-      else if (k == 4) { int64_t r = tsasm_parse_go(t, n, a, 3); if (r != -2 && r != -1) { printf("cap3 gave %ld %s\n", (long)r, path); } free(t); continue; }
+      else if (k == 4) { tsasm_parser_set_memory_limit(p, 4096); int64_t r = tsasm_parse_go(p, t, n, &an); tsasm_parser_set_memory_limit(p, TSASM_DEFAULT_MEMORY_LIMIT); if (r != TSASM_ERR_LIMIT && r != TSASM_ERR_SYNTAX) { printf("4 KiB limit gave %ld %s\n", (long)r, path); } free(t); continue; }
       else if (k == 5) { for (long m = 0; m < len; m++) if (t[m] == '\n') t[m] = ' '; }  // no newlines
-      int64_t r1 = tsasm_parse_go(t, n, a, 1 << 22), r2 = ref_parse_go(t, n, b, 1 << 22, 1);
+      int64_t r1 = tsasm_parse_go(p, t, n, &an), r2 = ref_parse_go(t, n, b, 1 << 22, 1);
       if (r1 < 0) bad++; else ok++;
-      if (r1 >= 0 && r2 >= 0) { if (r1 == r2 && !memcmp(a, b, r1 * 16)) agree++; else disagree++; }
+      if (r1 >= 0 && r2 >= 0) { if (r1 == r2 && !memcmp(an, b, r1 * 16)) agree++; else disagree++; }
       if (r1 >= 0 && r2 < 0) printf("asm accepts, C rejects: k=%d %s\n", k, path);
       free(t);
     }

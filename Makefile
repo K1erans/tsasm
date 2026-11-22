@@ -42,6 +42,7 @@ tools: libtsasm.a $(REFLIB) build/lexwrap.o
 	gcc -O2 -w -o test/speed test/speed.c libtsasm.a $(REFLIB)
 	gcc -O2 -w -o test/fuzz test/fuzz.c libtsasm.a $(REFLIB)
 	gcc -O2 -g -o test/one test/one.c libtsasm.a
+	gcc -O2 -g -pthread -I$(TS_RUNTIME)/include -o test/mtspeed test/mtspeed.c libtsasm.a $(REFLIB)
 
 # parity vs C tree-sitter over GOROOT/src (memory capped at 4 GB)
 check: tools

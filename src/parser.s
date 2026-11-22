@@ -1,10 +1,13 @@
 # tsasm: tree-sitter style GLR parser runtime for tree-sitter-go tables, x86-64 (GNU as, intel syntax)
 #
 # Exports (System V AMD64):
-#   int64_t tsasm_parse_go(const uint8_t *src, uint64_t len, TsasmNode *out, uint64_t cap)
+#   TsasmParser *tsasm_parser_new(void), void tsasm_parser_free(TsasmParser *),
+#   void tsasm_parser_set_memory_limit(TsasmParser *, uint64_t)
+#   int64_t tsasm_parse_go(TsasmParser *p, const uint8_t *src, uint64_t len, const TsasmNode **nodes)
 #   const char *tsasm_symbol_name_go(uint16_t symbol)
 #
-# Internal convention: r15 = &ctx for the whole parse (callee-saved, never modified inside).
+# Internal convention: r15 = the caller's TsasmParser for the whole parse (callee-saved, never
+# modified inside). There is no writable static data: a call touches only its own context.
 # Internal functions follow SysV (rbx, rbp, r12-r15 preserved). Grow helpers preserve ALL
 # registers except flags, so hot paths can call them without spilling.
 #
@@ -36,16 +39,26 @@
 	.set C_TKW, 80
 	.set C_TPSTATE, 84
 	.set C_OUT, 88
-	.set C_CAP, 96
+	.set C_OUTCAP, 100
 	.set C_ESTK, 104
-	.set C_ESTKCAP, 112
+	.set C_ESTKCAP, 116
 	.set C_SAVEDRSP, 120
 	.set C_STEPS, 128
 	.set C_NODELIM, 136
+	.set C_MEMUSED, 144
+	.set C_MEMLIMIT, 152
+	.set C_CAPHIT, 160
+	.set C_RESULT, 168
 	.set C_VERS, 192
 	.set MAXVERS, 128
 	.set MAXV, 64
 	.set C_SIZE, C_VERS + MAXVERS * 32
+
+	.set ERR_SYNTAX, -1
+	.set ERR_LIMIT, -3
+	.set ERR_NOMEM, -4
+	.set DEFAULT_MEMLIMIT, 1 << 30
+	.set RETAIN_BYTES, 64 << 20
 
 	.set V_E, 0
 	.set V_SIZE, 8
@@ -61,10 +74,6 @@
 	.set N_CC, 12
 	.set N_CI, 16
 	.set N_DYN, 20
-
-	.bss
-	.balign 64
-ctx:	.zero C_SIZE
 
 	.text
 
@@ -99,110 +108,147 @@ ctx:	.zero C_SIZE
 	pop rbp
 .endm
 
-# grow nodes so that nn < ncap
-p_grow_nodes:
+# Growable buffers share one layout: qword pointer at +0, dword capacity (entries) at +12.
+#
+# p_grow(rdi = buffer, esi = entries needed, ecx = log2 entry size): grow to at least esi
+# entries (doubling, at least 256). The size increase is charged to C_MEMUSED against
+# C_MEMLIMIT before realloc, and pointer, capacity and usage are stored only after realloc
+# succeeds, so an aborted parse leaves a consistent context. Preserves every GPR.
+p_grow:
 	SAVE_VOLATILE
-	mov esi, dword ptr [r15+C_NCAP]
-	cmp esi, dword ptr [r15+C_NODELIM]
-	jae p_abort
-	add esi, esi
-	mov eax, 65536
-	cmp esi, eax
-	cmovb esi, eax
-	mov dword ptr [r15+C_NCAP], esi
-	shl rsi, 5
-	mov rdi, qword ptr [r15+C_NODES]
-	call realloc@PLT
-	test rax, rax
-	jz p_oom
-	mov qword ptr [r15+C_NODES], rax
-	RESTORE_VOLATILE
-	ret
-
-# grow kids so that nk + edi <= kcap
-p_grow_kids:
-	SAVE_VOLATILE
-	mov eax, dword ptr [r15+C_NK]
-	add eax, edi
-	mov esi, dword ptr [r15+C_KCAP]
-	test esi, esi
-	jnz 1f
-	mov esi, 65536
-1:	cmp esi, eax
-	jae 2f
-	add esi, esi
-	jc p_abort
-	jmp 1b
-2:	mov eax, dword ptr [r15+C_NODELIM]
-	shl rax, 2
-	cmp rsi, rax
-	ja p_abort
-	mov dword ptr [r15+C_KCAP], esi
-	shl rsi, 2
-	mov rdi, qword ptr [r15+C_KIDS]
-	call realloc@PLT
-	test rax, rax
-	jz p_oom
-	mov qword ptr [r15+C_KIDS], rax
-	RESTORE_VOLATILE
-	ret
-
-# grow version stack rdi (version ptr) to hold esi entries
-p_grow_vstack:
-	SAVE_VOLATILE
-	mov eax, dword ptr [rdi+V_CAP]
-	test eax, eax
-	jnz 1f
-	mov eax, 256
-1:	cmp eax, esi
-	jae 2f
-	add eax, eax
-	jmp 1b
-2:	cmp eax, 0x400000
-	ja p_abort
-	mov dword ptr [rdi+V_CAP], eax
 	mov r8, rdi
-	mov esi, eax
-	shl rsi, 3
-	mov rdi, qword ptr [r8+V_E]
-	push r8
-	push r8
-	call realloc@PLT
-	pop r8
-	pop r8
-	test rax, rax
-	jz p_oom
-	mov qword ptr [r8+V_E], rax
-	RESTORE_VOLATILE
-	ret
-
-# grow emit stack (frames of 16 bytes) to at least esi frames
-p_grow_estk:
-	SAVE_VOLATILE
-	mov eax, dword ptr [r15+C_ESTKCAP]
-	test eax, eax
-	jnz 1f
-	mov eax, 1024
-1:	cmp eax, esi
-	ja 2f
-	add eax, eax
+	mov r9d, dword ptr [r8+12]
+	mov edx, 256
+	cmp edx, r9d
+	cmovb edx, r9d
+1:	cmp edx, esi
+	jae 2f
+	add edx, edx
+	jc p_limit
 	jmp 1b
-2:	mov dword ptr [r15+C_ESTKCAP], eax
-	mov esi, eax
-	shl rsi, 4
-	mov rdi, qword ptr [r15+C_ESTK]
+2:	mov eax, edx
+	sub eax, r9d
+	shl rax, cl
+	add rax, qword ptr [r15+C_MEMUSED]
+	cmp rax, qword ptr [r15+C_MEMLIMIT]
+	ja p_limit
+	push rdx
+	push rax
+	push r8
+	push r8
+	mov esi, edx
+	shl rsi, cl
+	mov rdi, qword ptr [r8]
 	call realloc@PLT
+	pop r8
+	pop r8
+	pop rcx
+	pop rdx
 	test rax, rax
 	jz p_oom
-	mov qword ptr [r15+C_ESTK], rax
+	mov qword ptr [r8], rax
+	mov dword ptr [r8+12], edx
+	mov qword ptr [r15+C_MEMUSED], rcx
 	RESTORE_VOLATILE
 	ret
 
+# p_grow_nodes: make nn < ncap (node count also capped by C_NODELIM). Preserves every GPR.
+p_grow_nodes:
+	push rdi
+	push rsi
+	push rcx
+	mov esi, dword ptr [r15+C_NN]
+	cmp esi, dword ptr [r15+C_NODELIM]
+	jae p_limit
+	inc esi
+	lea rdi, [r15+C_NODES]
+	mov ecx, 5
+	call p_grow
+	pop rcx
+	pop rsi
+	pop rdi
+	ret
+
+# p_grow_kids(edi = count): make nk + edi <= kcap. Preserves every GPR.
+p_grow_kids:
+	push rdi
+	push rsi
+	push rcx
+	mov esi, dword ptr [r15+C_NK]
+	add esi, edi
+	jc p_limit
+	lea rdi, [r15+C_KIDS]
+	mov ecx, 2
+	call p_grow
+	pop rcx
+	pop rsi
+	pop rdi
+	ret
+
+# p_grow_vstack(rdi = version, esi = entries). Preserves every GPR.
+p_grow_vstack:
+	push rcx
+	mov ecx, 3
+	call p_grow
+	pop rcx
+	ret
+
+# p_grow_estk(esi = frames): 16-byte frames used by emit and subtree compare. Preserves every GPR.
+p_grow_estk:
+	push rdi
+	push rcx
+	lea rdi, [r15+C_ESTK]
+	mov ecx, 4
+	call p_grow
+	pop rcx
+	pop rdi
+	ret
+
+# Budget aborts unwind straight to the end of tsasm_parse_go.
+p_limit:
+	mov eax, ERR_LIMIT
+	jmp 1f
 p_oom:
-p_abort:
-	mov rsp, qword ptr [r15+C_SAVEDRSP]
-	mov rax, -1
+	mov eax, ERR_NOMEM
+1:	mov rsp, qword ptr [r15+C_SAVEDRSP]
+	movsxd rax, eax
 	jmp .Lmain_ret
+
+# p_release: free every buffer the context owns and zero their capacities (r15 = ctx).
+p_release:
+	push rbx
+	push r12
+	push r13
+	lea rbx, [r15 + C_VERS]
+	lea r12, [r15 + C_SIZE]
+1:	mov rdi, qword ptr [rbx+V_E]
+	call free@PLT
+	mov qword ptr [rbx+V_E], 0
+	mov qword ptr [rbx+V_SIZE], 0
+	add rbx, 32
+	cmp rbx, r12
+	jb 1b
+	mov rdi, qword ptr [r15+C_NODES]
+	call free@PLT
+	mov rdi, qword ptr [r15+C_KIDS]
+	call free@PLT
+	mov rdi, qword ptr [r15+C_ESTK]
+	call free@PLT
+	mov rdi, qword ptr [r15+C_OUT]
+	call free@PLT
+	mov qword ptr [r15+C_OUT], 0
+	mov dword ptr [r15+C_OUTCAP], 0
+	mov qword ptr [r15+C_NODES], 0
+	mov qword ptr [r15+C_KIDS], 0
+	mov qword ptr [r15+C_ESTK], 0
+	mov dword ptr [r15+C_NCAP], 0
+	mov dword ptr [r15+C_KCAP], 0
+	mov dword ptr [r15+C_ESTKCAP], 0
+	mov qword ptr [r15+C_MEMUSED], 0
+	pop r13
+	pop r12
+	pop rbx
+	ret
 
 # ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
 .macro ALLOC_NODE reg
@@ -557,6 +603,10 @@ p_copy_version:
 	shl edi, 5
 	lea r9, [r15 + C_VERS + rdi]        # src
 	mov esi, dword ptr [r9+V_SIZE]
+	mov ecx, esi                        # copying costs one work unit per 16 entries
+	shr ecx, 4
+	sub qword ptr [r15+C_STEPS], rcx
+	jb p_limit
 	cmp esi, dword ptr [r8+V_CAP]
 	jbe 1f
 	mov rdi, r8
@@ -577,6 +627,7 @@ p_copy_version:
 	inc dword ptr [r15+C_NV]
 	ret
 .Lcv_fail:
+	mov dword ptr [r15+C_CAPHIT], 1
 	mov eax, -1
 	ret
 
@@ -631,42 +682,69 @@ p_swap_versions:
 
 # ---------------------------------------------------------------------------
 # p_subtree_compare(edi = a, esi = b) -> eax in {-1, 0, 1}
+# ts_subtree_compare: pre-order comparison of (symbol, child count). Iterative over the frame
+# stack so deep trees cannot overflow the native stack; each visited pair costs one work unit.
 # ---------------------------------------------------------------------------
 p_subtree_compare:
 	push rbx
+	push rbp
 	push r12
 	push r13
+	push r14
+	mov r12d, edi
+	mov r13d, esi
 	mov r8, qword ptr [r15+C_NODES]
-	mov eax, edi
+	mov r9, qword ptr [r15+C_KIDS]
+	mov rbx, qword ptr [r15+C_ESTK]
+	xor ebp, ebp                        # frames on the stack
+	jmp .Lsc_visit
+.Lsc_loop:
+	test ebp, ebp
+	jz .Lsc_eq
+	dec ebp
+	mov eax, ebp
+	shl eax, 4
+	mov r12d, dword ptr [rbx + rax]
+	mov r13d, dword ptr [rbx + rax + 4]
+.Lsc_visit:
+	sub qword ptr [r15+C_STEPS], 1
+	jb p_limit
+	mov eax, r12d
 	shl rax, 5
-	lea r12, [r8 + rax]
-	mov eax, esi
+	lea r10, [r8 + rax]
+	mov eax, r13d
 	shl rax, 5
-	lea r13, [r8 + rax]
-	movzx eax, word ptr [r12+N_SYM]
-	movzx ecx, word ptr [r13+N_SYM]
+	lea r11, [r8 + rax]
+	movzx eax, word ptr [r10+N_SYM]
+	movzx ecx, word ptr [r11+N_SYM]
 	cmp eax, ecx
 	jb .Lsc_m1
 	ja .Lsc_p1
-	mov eax, dword ptr [r12+N_CC]
-	cmp eax, dword ptr [r13+N_CC]
+	mov ecx, dword ptr [r10+N_CC]
+	cmp ecx, dword ptr [r11+N_CC]
 	jb .Lsc_m1
 	ja .Lsc_p1
-	xor ebx, ebx
-.Lsc_loop:
-	cmp ebx, dword ptr [r12+N_CC]
-	jae .Lsc_eq
-	mov r9, qword ptr [r15+C_KIDS]
-	mov eax, dword ptr [r12+N_CI]
-	add eax, ebx
-	mov edi, dword ptr [r9 + rax*4]
-	mov eax, dword ptr [r13+N_CI]
-	add eax, ebx
-	mov esi, dword ptr [r9 + rax*4]
-	call p_subtree_compare
-	test eax, eax
-	jnz .Lsc_ret
-	inc ebx
+	test ecx, ecx
+	jz .Lsc_loop
+	lea esi, [rbp + rcx]
+	cmp esi, dword ptr [r15+C_ESTKCAP]
+	jbe 1f
+	call p_grow_estk
+	mov rbx, qword ptr [r15+C_ESTK]
+1:	mov edi, dword ptr [r10+N_CI]
+	mov edx, dword ptr [r11+N_CI]
+2:	dec ecx                             # push child pairs last-first so child 0 pops first
+	mov r14d, ebp
+	shl r14d, 4
+	lea eax, [rdi + rcx]
+	mov eax, dword ptr [r9 + rax*4]
+	mov dword ptr [rbx + r14], eax
+	lea eax, [rdx + rcx]
+	mov eax, dword ptr [r9 + rax*4]
+	mov dword ptr [rbx + r14 + 4], eax
+	inc ebp
+	test ecx, ecx
+	jnz 2b
 	jmp .Lsc_loop
 .Lsc_eq:
 	xor eax, eax
@@ -677,8 +755,10 @@ p_subtree_compare:
 .Lsc_p1:
 	mov eax, 1
 .Lsc_ret:
+	pop r14
 	pop r13
 	pop r12
+	pop rbp
 	pop rbx
 	ret
 
@@ -736,6 +816,11 @@ p_try_converge:
 	dec ebx
 	jmp .Ltc_scan
 .Ltc_scanned:
+	mov eax, ebp                        # the scan costs one work unit per 16 entries
+	sub eax, ebx
+	shr eax, 4
+	sub qword ptr [r15+C_STEPS], rax
+	jb p_limit
 	inc ebx                             # lo
 	mov eax, 1
 	cmp ebx, ebp
@@ -938,7 +1023,7 @@ p_advance:
 	push r14
 	sub rsp, 16                         # [rsp] = k, [rsp+4] = count, [rsp+8] = last_red
 	sub qword ptr [r15+C_STEPS], 1
-	jb p_abort
+	jb p_limit
 	mov ebx, edi
 	mov eax, edi
 	shl eax, 5
@@ -1118,7 +1203,7 @@ p_advance:
 	ret
 
 # ---------------------------------------------------------------------------
-# p_emit() -> rax = node count or -2
+# p_emit() -> rax = node count, nodes in the context's output buffer
 # ---------------------------------------------------------------------------
 p_emit:
 	push rbx
@@ -1126,12 +1211,15 @@ p_emit:
 	push r12
 	push r13
 	push r14
-	mov r8, qword ptr [r15+C_NODES]
+	mov esi, dword ptr [r15+C_NN]       # visible nodes <= arena nodes
+	cmp esi, dword ptr [r15+C_OUTCAP]
+	jbe 1f
+	lea rdi, [r15+C_OUT]
+	mov ecx, 4
+	call p_grow
+1:	mov r8, qword ptr [r15+C_NODES]
 	mov r12, qword ptr [r15+C_OUT]
-	mov r13, qword ptr [r15+C_CAP]
-	mov eax, -2
-	test r13, r13
-	jz .Lem_ret
+	mov r13d, dword ptr [r15+C_OUTCAP]
 	mov ecx, dword ptr [r15+C_FINISHED]
 	mov eax, ecx
 	shl rax, 5
@@ -1152,10 +1240,10 @@ p_emit:
 	mov r14d, 1                         # n
 	# frame stack
 	cmp dword ptr [r15+C_ESTKCAP], 0
-	jne 1f
+	jne 2f
 	mov esi, 1
 	call p_grow_estk
-1:	mov rbx, qword ptr [r15+C_ESTK]
+2:	mov rbx, qword ptr [r15+C_ESTK]
 	xor ebp, ebp                        # sp (frames)
 	mov dword ptr [rbx], ecx
 	mov qword ptr [rbx+4], 0
@@ -1244,8 +1332,8 @@ p_emit:
 .Lem_done:
 	mov rax, r14
 	jmp .Lem_ret
-.Lem_full:
-	mov rax, -2
+.Lem_full:                              # unreachable while the bound above holds
+	mov rax, ERR_LIMIT
 .Lem_ret:
 	pop r14
 	pop r13
@@ -1255,7 +1343,8 @@ p_emit:
 	ret
 
 # ---------------------------------------------------------------------------
-# int64_t tsasm_parse_go(const uint8_t *src, uint64_t len, TsasmNode *out, uint64_t cap)
+# int64_t tsasm_parse_go(TsasmParser *p, const uint8_t *src, uint64_t len,
+#                        const TsasmNode **nodes)
 # ---------------------------------------------------------------------------
 	.globl tsasm_parse_go
 	.type tsasm_parse_go, @function
@@ -1268,8 +1357,18 @@ tsasm_parse_go:
 	push r14
 	push r15
 	sub rsp, 8
-	lea r15, [rip + ctx]
+	mov r15, rdi
 	mov qword ptr [r15+C_SAVEDRSP], rsp
+	mov qword ptr [r15+C_RESULT], rcx
+	cmp qword ptr [r15+C_MEMUSED], RETAIN_BYTES   # drop what a huge earlier file left behind
+	jbe 1f
+	push rsi
+	push rdx
+	call p_release
+	pop rdx
+	pop rsi
+1:	mov rdi, rsi
+	mov rsi, rdx
 	mov rax, rsi
 	shl rax, 6
 	add rax, 10000
@@ -1281,20 +1380,19 @@ tsasm_parse_go:
 	cmp rax, r8
 	cmova rax, r8
 	mov dword ptr [r15+C_NODELIM], eax  # node budget: 32 * len + 100000
-	mov rax, -1
+	mov rax, ERR_LIMIT
 	mov r8d, 0xFFFFFFF0                 # byte offsets are 32-bit: reject inputs >= ~4 GiB
 	cmp rsi, r8
 	jae .Lmain_ret
 	mov qword ptr [r15+C_SRC], rdi
 	add rsi, rdi
 	mov qword ptr [r15+C_END], rsi
-	mov qword ptr [r15+C_OUT], rdx
-	mov qword ptr [r15+C_CAP], rcx
 	mov dword ptr [r15+C_NN], 0
 	mov dword ptr [r15+C_NK], 0
 	mov dword ptr [r15+C_FINISHED], -1
 	mov dword ptr [r15+C_TOKVALID], 0
 	mov dword ptr [r15+C_LASTPOS], 0
+	mov dword ptr [r15+C_CAPHIT], 0
 	# node 0: zeroed stack-base node
 	ALLOC_NODE eax
 	mov r8, qword ptr [r15+C_NODES]
@@ -1410,17 +1508,29 @@ tsasm_parse_go:
 .Lcd_cap:
 	cmp dword ptr [r15+C_NV], MAXV
 	jbe .Lmain_outer
+	mov dword ptr [r15+C_CAPHIT], 1
 	mov edi, MAXV
 	call p_remove_version
 	jmp .Lcd_cap
 
 .Lmain_end:
-	mov rax, -1
 	cmp dword ptr [r15+C_FINISHED], 0
-	jl .Lmain_ret
-	call p_emit
+	jge 1f
+	mov rax, ERR_SYNTAX
+	cmp dword ptr [r15+C_CAPHIT], 0     # a version was dropped at the cap: not a proven error
+	je .Lmain_ret
+	mov rax, ERR_LIMIT
+	jmp .Lmain_ret
+1:	call p_emit
 .Lmain_ret:
-	add rsp, 8
+	mov rcx, qword ptr [r15+C_RESULT]
+	test rcx, rcx
+	jz 2f
+	xor edx, edx
+	test rax, rax
+	cmovns rdx, qword ptr [r15+C_OUT]
+	mov qword ptr [rcx], rdx
+2:	add rsp, 8
 	pop r15
 	pop r14
 	pop r13
@@ -1429,6 +1539,58 @@ tsasm_parse_go:
 	pop rbx
 	ret
 	.size tsasm_parse_go, .-tsasm_parse_go
+
+	.set C_ALLOC, (C_SIZE + 63) & ~63
+
+# TsasmParser *tsasm_parser_new(void): zeroed, cache-line aligned context (NULL if out of memory)
+	.globl tsasm_parser_new
+	.type tsasm_parser_new, @function
+tsasm_parser_new:
+	push rbx
+	mov edi, 64
+	mov esi, C_ALLOC
+	call aligned_alloc@PLT
+	test rax, rax
+	jz 1f
+	mov rbx, rax
+	mov rdi, rax
+	xor eax, eax
+	mov ecx, C_ALLOC
+	rep stosb
+	mov rax, rbx
+	mov qword ptr [rax+C_MEMLIMIT], DEFAULT_MEMLIMIT
+1:	pop rbx
+	ret
+	.size tsasm_parser_new, .-tsasm_parser_new
+
+# void tsasm_parser_free(TsasmParser *p)
+	.globl tsasm_parser_free
+	.type tsasm_parser_free, @function
+tsasm_parser_free:
+	test rdi, rdi
+	jz 1f
+	push r15
+	mov r15, rdi
+	call p_release
+	mov rdi, r15
+	pop r15
+	jmp free@PLT
+1:	ret
+	.size tsasm_parser_free, .-tsasm_parser_free
+
+# void tsasm_parser_set_memory_limit(TsasmParser *p, uint64_t bytes)
+	.globl tsasm_parser_set_memory_limit
+	.type tsasm_parser_set_memory_limit, @function
+tsasm_parser_set_memory_limit:
+	mov qword ptr [rdi+C_MEMLIMIT], rsi
+	cmp qword ptr [rdi+C_MEMUSED], rsi
+	jbe 1f
+	push r15
+	mov r15, rdi
+	call p_release
+	pop r15
+1:	ret
+	.size tsasm_parser_set_memory_limit, .-tsasm_parser_set_memory_limit
 
 # const char *tsasm_symbol_name_go(uint16_t symbol)
 	.globl tsasm_symbol_name_go
