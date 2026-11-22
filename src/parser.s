@@ -53,6 +53,7 @@
 	.set C_RESULT, 168
 	.set C_NEXTGID, 176                 # merge group ids handed out this parse
 	.set C_GLIVE, 180                   # bit0: a group formed this condense, bit1: some V_GID != 0
+	.set C_NAVAIL, 184                  # min(node capacity, node budget): ALLOC_NODE's bound
 	.set C_LANG, 192                   # copy of the TsasmLanguage descriptor for this parse
 	.set C_VERS, 320
 	.set MAXVERS, 128
@@ -179,7 +180,8 @@ p_grow:
 	RESTORE_VOLATILE
 	ret
 
-# p_grow_nodes: make nn < ncap (node count also capped by C_NODELIM). Preserves every GPR.
+# p_grow_nodes: make nn < navail, growing the arena if needed; the node budget C_NODELIM is
+# enforced here, so a capacity kept from an earlier parse cannot lift it. Preserves every GPR.
 p_grow_nodes:
 	push rdi
 	push rsi
@@ -187,13 +189,24 @@ p_grow_nodes:
 	mov esi, dword ptr [r15+C_NN]
 	cmp esi, dword ptr [r15+C_NODELIM]
 	jae p_limit
+	cmp esi, dword ptr [r15+C_NCAP]
+	jb 1f
 	inc esi
 	lea rdi, [r15+C_NODES]
 	mov ecx, 5
 	call p_grow
+1:	call p_set_navail
 	pop rcx
 	pop rsi
 	pop rdi
+	ret
+
+# p_set_navail: C_NAVAIL = min(C_NCAP, C_NODELIM). Preserves every GPR but rcx.
+p_set_navail:
+	mov ecx, dword ptr [r15+C_NCAP]
+	cmp ecx, dword ptr [r15+C_NODELIM]
+	cmova ecx, dword ptr [r15+C_NODELIM]
+	mov dword ptr [r15+C_NAVAIL], ecx
 	ret
 
 # p_grow_kids(edi = count): make nk + edi <= kcap. Preserves every GPR.
@@ -280,7 +293,7 @@ p_release:
 # ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
 .macro ALLOC_NODE reg
 	mov \reg, dword ptr [r15+C_NN]
-	cmp \reg, dword ptr [r15+C_NCAP]
+	cmp \reg, dword ptr [r15+C_NAVAIL]
 	jb 91f
 	call p_grow_nodes
 91:	inc dword ptr [r15+C_NN]
@@ -1451,6 +1464,7 @@ tsasm_parse:
 	cmp rax, r8
 	cmova rax, r8
 	mov dword ptr [r15+C_NODELIM], eax  # node budget: 32 * len + 100000
+	call p_set_navail
 	mov rax, ERR_LIMIT
 	mov r8d, 0xFFFFFFF0                 # byte offsets are 32-bit: reject inputs >= ~4 GiB
 	cmp rsi, r8
@@ -1528,6 +1542,8 @@ tsasm_parse:
 .Lcd_i:
 	cmp ebx, dword ptr [r15+C_NV]
 	jae .Lcd_cap
+	sub qword ptr [r15+C_STEPS], 1      # a unit per version condensed: the pair loop is
+	jb p_limit                          # at most MAXVERS / 2 compares per unit
 	mov eax, ebx
 	shl eax, 5
 	lea r12, [r15 + C_VERS + rax]
@@ -1572,6 +1588,7 @@ tsasm_parse:
 	mov edi, ebp
 	mov esi, ebx
 	call p_swap_versions
+	jmp .Lcd_jnext
 .Lcd_group:                             # C merges the heads anyway: X and Y form one group
 	mov eax, dword ptr [r13+V_GID]      # only versions that were one head, or none, can join:
 	cmp eax, dword ptr [r12+V_GID]      # C's links of separate heads cross in ways that lone

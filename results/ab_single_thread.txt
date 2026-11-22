@@ -1,8 +1,8 @@
-mtspeed_old median=1.223s MB/s=73.8 min=1.212 max=1.226 runs=5 u=7.30 s=0.11 f=39466 
-test/mtspeed median=1.236s MB/s=73.0 min=1.220 max=1.249 runs=5 u=7.43 s=0.10 f=39474 
-mtspeed_old median=1.196s MB/s=75.5 min=1.192 max=1.197 runs=5 u=7.18 s=0.11 f=39462 
-test/mtspeed median=1.226s MB/s=73.7 min=1.221 max=1.230 runs=5 u=7.36 s=0.10 f=39474 
-mtspeed_old median=1.194s MB/s=75.6 min=1.191 max=1.197 runs=5 u=7.18 s=0.10 f=39465 
-test/mtspeed median=1.220s MB/s=74.0 min=1.218 max=1.229 runs=5 u=7.34 s=0.10 f=39475 
-mtspeed_old median=1.198s MB/s=75.4 min=1.196 max=1.201 runs=5 u=7.19 s=0.10 f=39461 
-test/mtspeed median=1.229s MB/s=73.4 min=1.217 max=1.234 runs=5 u=7.37 s=0.10 f=39482 
+mtspeed_old warm 1.240s 72.8 MB/s accepted=7653 nodes=27151858 median=1.227s MB/s=73.6 min=1.213 max=1.237 runs=5 f=39466 
+test/mtspeed warm 1.268s 71.2 MB/s accepted=7653 nodes=27151858 median=1.264s MB/s=71.4 min=1.238 max=1.271 runs=5 f=39475 
+mtspeed_old warm 1.239s 72.9 MB/s accepted=7653 nodes=27151858 median=1.223s MB/s=73.8 min=1.212 max=1.230 runs=5 f=39465 
+test/mtspeed warm 1.284s 70.3 MB/s accepted=7653 nodes=27151858 median=1.259s MB/s=71.7 min=1.238 max=1.266 runs=5 f=39482 
+mtspeed_old warm 1.253s 72.1 MB/s accepted=7653 nodes=27151858 median=1.214s MB/s=74.4 min=1.192 max=1.224 runs=5 f=39466 
+test/mtspeed warm 1.270s 71.1 MB/s accepted=7653 nodes=27151858 median=1.259s MB/s=71.7 min=1.256 max=1.269 runs=5 f=39474 
+mtspeed_old warm 1.247s 72.4 MB/s accepted=7653 nodes=27151858 median=1.218s MB/s=74.1 min=1.191 max=1.229 runs=5 f=39466 
+test/mtspeed warm 1.281s 70.5 MB/s accepted=7653 nodes=27151858 median=1.252s MB/s=72.1 min=1.245 max=1.270 runs=5 f=39476 

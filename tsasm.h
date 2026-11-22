@@ -23,7 +23,7 @@ TsasmParser *tsasm_parser_new(void);
 void tsasm_parser_free(TsasmParser *p);
 // Caps the bytes the parser may hold: parse buffers plus the output array. A parse that would
 // exceed it returns TSASM_ERR_LIMIT. Buffers kept from earlier parses count, so lowering the
-// limit below current use frees them. Between parses a parser keeps its buffers, and drops them
+// limit below current use frees them, including the node array of the last parse. Between parses a parser keeps its buffers, and drops them
 // at the next parse if they exceed both an eighth of the limit (128 MiB by default) and 256 bytes
 // per byte of that parse's input.
 void tsasm_parser_set_memory_limit(TsasmParser *p, uint64_t bytes);
