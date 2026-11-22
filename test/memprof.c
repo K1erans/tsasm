@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
     {"cells", -1, 396, 8}, {"slk", -1, 412, 4}};
   enum { NB = sizeof B / sizeof *B };
   double used[NB] = {0}, cap[NB] = {0}, bytes = 0, outn = 0, reach = 0, reachk = 0, leaves = 0, total = 0;
-  double maxcap = 0; long maxlen = 0; char maxpath[4096] = "";
+  double reachu = 0, kidsall = 0; double maxcap = 0; long maxlen = 0; char maxpath[4096] = "";
   uint8_t *mark = NULL; uint32_t *stk = NULL; size_t mcap = 0;
   while (n < max && fgets(path, sizeof path, fl)) {
     path[strcspn(path, "\n")] = 0;
@@ -37,10 +37,11 @@ int main(int argc, char **argv) {
         uint32_t t = stk[--sp]; reach++;
         uint32_t cc = *(uint32_t *)(tr + 4 * (size_t)t + 12), ci = *(uint32_t *)(tr + 4 * (size_t)t + 16);
         if (!cc) leaves++;
+        reachu += cc ? 6 : 4;
         reachk += cc;
         for (uint32_t j = 0; j < cc; j++) { uint32_t c = kids[ci + j]; if (!mark[c]) { mark[c] = 1; stk[sp++] = c; } }
       }
-      total += nn;
+      total += nn; kidsall += u32(p, 24);
       n++; bytes += len; outn += r;
       double fc = 0;
       for (int i = 0; i < NB; i++) fc += (double)u32(p, B[i].cap) * B[i].size;
@@ -57,6 +58,7 @@ int main(int argc, char **argv) {
   double tu = 0, tc = 0;
   for (int i = 0; i < NB; i++) { printf("%-8s %12.2f %12.2f\n", B[i].name, used[i] / bytes, cap[i] / bytes); tu += used[i]; tc += cap[i]; }
   printf("%-8s %12.2f %12.2f\n", "total", tu / bytes, tc / bytes);
+  printf("dead: %.1f%% of the tree arena (%.2f bytes per input byte), %.1f%% of kids (%.2f)\n", 100 * (1 - reachu / total), (total - reachu) * 4 / bytes, 100 * (1 - reachk / kidsall), (kidsall - reachk) * 4 / bytes);
   printf("most memory: %.1f MB of buffers for %.2f MB, %s\n", maxcap / 1e6, maxlen / 1e6, maxpath);
   printf("trees: %.3f reachable from the root per byte, %.3f of them leaves; arena %.2f bytes per byte; reachable kids %.3f per byte\n",
          reach / bytes, leaves / bytes, total * 4 / bytes, reachk / bytes);
