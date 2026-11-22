@@ -68,6 +68,26 @@ tsasm_parser_free(p);
   parsing is part of the work, 8 MiB costs about 6% at 20 workers for 58% less peak memory
   (`results/ab_retain.txt`).
 
+### Go
+
+The repository root is the Go package `github.com/K1erans/tsasm` (linux/amd64, cgo). cgo
+assembles the library with the C compiler, so `go get` is all it takes: no `make`, no
+`CGO_LDFLAGS`.
+
+```go
+p, err := tsasm.NewParser() // one per goroutine
+defer p.Close()
+nodes, err := p.Parse(tsasm.Lookup("go"), src) // tsasm.ErrSyntax, ErrLimit or ErrNoMem
+for _, n := range nodes { // valid until p's next Parse or Close
+	fmt.Println(tsasm.Lookup("go").SymbolName(n.Symbol), n.Start, n.End, n.Parent)
+}
+```
+
+The package builds from `zparser_linux_amd64.s` and `zlang_<grammar>_linux_amd64.s`, copies of
+`src/parser.s` and the generated `build/lang_<grammar>.s`. After changing either, run
+`make gopkg`; `make check-gopkg` fails if the copies are stale. The grammar tables are under the
+grammars' MIT licenses (`NOTICE`).
+
 ### Budgets
 
 Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the parser usable.

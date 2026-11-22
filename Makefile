@@ -109,3 +109,13 @@ test/check_proto: test/check.c test/proto.c test/langs.h tsasm.h build/proto_par
 	gcc $(TOOLFLAGS) -DPROTO -o $@ test/check.c test/proto.c build/proto_parser.o $(GRAMMARS:%=build/lang_%.o) $(REFLIB)
 proto: test/check_proto
 .PHONY: proto
+
+# ---- Go package (tsasm.go): cgo assembles the z*_linux_amd64.s copies of the sources ----
+# Run after changing src/parser.s, gen/gen.py or a grammar; check-gopkg fails if they are stale.
+gopkg: $(GRAMMARS:%=build/lang_%.s)
+	cp src/parser.s zparser_linux_amd64.s
+	for g in $(GRAMMARS); do cp build/lang_$$g.s zlang_$${g}_linux_amd64.s; done
+check-gopkg: $(GRAMMARS:%=build/lang_%.s)
+	cmp src/parser.s zparser_linux_amd64.s
+	for g in $(GRAMMARS); do cmp build/lang_$$g.s zlang_$${g}_linux_amd64.s || exit 1; done
+.PHONY: gopkg check-gopkg
