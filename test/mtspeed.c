@@ -86,6 +86,7 @@ int main(int argc, char **argv) {
   if (argc < 6) { fprintf(stderr, "usage: mtspeed <lang> <filelist> <asm|c> <workers> <runs> [cpus]\n"); return 2; }
   L = test_lang(argv[1]);
   use_c = strcmp(argv[3], "c") == 0; workers = atoi(argv[4]); runs = atoi(argv[5]);
+  if (workers < 1 || runs < 1) { fprintf(stderr, "mtspeed: workers and runs must be at least 1\n"); return 2; }
   if (argc > 6) for (char *t = strtok(argv[6], ","); t && ncpus < 256; t = strtok(NULL, ",")) cpus[ncpus++] = atoi(t);
   FILE *fl = fopen(argv[2], "r"); char path[4096]; int cap = 1024; uint64_t total = 0;
   srcs = malloc(cap * sizeof *srcs); lens = malloc(cap * sizeof *lens);
@@ -119,5 +120,6 @@ int main(int argc, char **argv) {
   qsort(t + 1, runs, sizeof *t, dcmp);
   double med = runs % 2 ? t[1 + runs / 2] : (t[runs / 2] + t[runs / 2 + 1]) / 2;
   printf("RESULT %s workers=%d median=%.3fs MB/s=%.1f min=%.3f max=%.3f runs=%d\n", use_c ? "c" : "asm", workers, med, total / 1e6 / med, t[1], t[runs], runs);
+  free(t);
   return 0;
 }
