@@ -99,3 +99,12 @@ fuzz: $(GRAMMARS:%=build/fuzz/%)
 fuzz-regress: fuzz
 	sh scripts/fuzz_regress.sh
 .PHONY: fuzz fuzz-regress
+
+# ---- GSS prototype (test/proto.c): the C spec of the parse stack port, checked like the library ----
+build/proto_parser.o: src/parser.s
+	@mkdir -p build
+	$(AS) --defsym PROTO=1 -o $@ src/parser.s
+test/check_proto: test/check.c test/proto.c test/langs.h tsasm.h build/proto_parser.o $(GRAMMARS:%=build/lang_%.o) $(REFLIB)
+	gcc $(TOOLFLAGS) -DPROTO -o $@ test/check.c test/proto.c build/proto_parser.o $(GRAMMARS:%=build/lang_%.o) $(REFLIB)
+proto: test/check_proto
+.PHONY: proto

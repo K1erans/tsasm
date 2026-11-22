@@ -37,9 +37,9 @@ void tsasm_parser_set_memory_limit(TsasmParser *p, uint64_t bytes);
 int64_t tsasm_parse(TsasmParser *p, const TsasmLanguage *lang, const uint8_t *src, uint64_t len,
                     const TsasmNode **nodes);
 
-#define TSASM_ERR_SYNTAX (-1) // no parse: the input is not in the language (there is no error recovery)
+#define TSASM_ERR_SYNTAX (-1) // no parse: C tree-sitter would return a tree with errors (there is no error recovery)
 #define TSASM_ERR_LIMIT (-3)  // a budget ran out: the memory limit, the work budget (64 units per input byte),
-                              // the GLR version cap, 2^27 tree nodes, or an input of 4 GiB or more
+                              // 2^27 tree nodes, or an input of 4 GiB or more
 #define TSASM_ERR_NOMEM (-4)  // the allocator failed; the parser stays usable
 
 // Name of a node's symbol (ids as in the grammar's parser.c after alias resolution, the same as

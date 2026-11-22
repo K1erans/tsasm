@@ -15,10 +15,12 @@
 # registers except flags, so hot paths can call them without spilling.
 #
 # Data model:
-#   Node  (32 bytes): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
-#                     u32 child_count, u32 child_index (into kids[]), i32 dynamic_precedence
-#   Entry (8 bytes) : u32 node, u32 state | (extra << 16)
-#   Version (32 bytes): ptr entries, u32 size, u32 cap, u32 status (0 active,1 dead,2 accepted), i32 dynsum
+#   Tree node (32 bytes): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
+#                         u32 child_count, u32 child_index (into kids[]), i32 dynamic_precedence
+#   Stack node (24 bytes): C tree-sitter's graph-structured stack node: u16 state, u8 link count,
+#                         u8 mark, i32 dynamic_precedence, link 0 (u32 node, u32 tree), u32 position,
+#                         u32 extension block (links 1..7, 64 bytes each) or next free node
+#   Head (8 bytes): u32 stack node, u32 dead (C's paused or halted; there is no error recovery)
 
 	.intel_syntax noprefix
 
@@ -30,7 +32,7 @@
 	.set C_KCAP, 28
 	.set C_SRC, 32
 	.set C_END, 40
-	.set C_NV, 48
+	.set C_NH, 48                       # stack heads (versions), dead ones included until condense
 	.set C_FINISHED, 52
 	.set C_LASTPOS, 56
 	.set C_TOKVALID, 60
@@ -49,16 +51,32 @@
 	.set C_NODELIM, 136
 	.set C_MEMUSED, 144
 	.set C_MEMLIMIT, 152
-	.set C_CAPHIT, 160
+	.set C_SFREE, 160                   # free stack nodes, linked through SN_EXT (0: none)
+	.set C_XFREE, 164                   # free extension blocks, linked through XB_NEXT
 	.set C_RESULT, 168
-	.set C_NEXTGID, 176                 # merge group ids handed out this parse
-	.set C_GLIVE, 180                   # bit0: a group formed this condense, bit1: some V_GID != 0
+	.set C_NI, 176                      # live pop iterators
 	.set C_NAVAIL, 184                  # min(node capacity, node budget): ALLOC_NODE's bound
-	.set C_LANG, 192                   # copy of the TsasmLanguage descriptor for this parse
-	.set C_VERS, 320
-	.set MAXVERS, 128
-	.set MAXV, 64
-	.set C_SIZE, C_VERS + MAXVERS * 32
+	.set C_LANG, 192                    # copy of the TsasmLanguage descriptor for this parse
+	.set C_SN, 320                      # stack nodes: ptr, u32 high-water mark, u32 capacity
+	.set C_SNN, 328
+	.set C_SNCAP, 332
+	.set C_XB, 336                      # extension blocks: ptr, u32 high-water mark, u32 capacity
+	.set C_XN, 344
+	.set C_XBCAP, 348
+	.set C_HEADS, 352
+	.set C_HCAP, 364
+	.set C_SLICES, 368                  # pop results: u32 version, u32 offset, u32 length (in C_SLK)
+	.set C_NSL, 376
+	.set C_SLCAP, 380
+	.set C_CELLS, 384                   # pop iterators' subtree lists: u32 tree, u32 previous cell
+	.set C_NCELL, 392
+	.set C_CELLCAP, 396
+	.set C_SLK, 400                     # slices' subtrees, bottom first (u32 tree)
+	.set C_NSLK, 408
+	.set C_SLKCAP, 412
+	.set C_ITERS, 448                   # pop iterators: u32 stack node, u32 count, u32 cell, pad
+	.set MAXITERS, 64                   # C's MAX_ITERATOR_COUNT
+	.set C_SIZE, C_ITERS + MAXITERS * 16
 
 # TsasmLanguage descriptor, emitted per grammar by gen/gen.py
 	.set L_PARSE_TABLE, 0               # u16 [states][nsym] -> action index or goto state
@@ -86,13 +104,29 @@
 	.set RETAIN_LIMIT_SHIFT, 3          # an eighth of the memory limit
 	.set RETAIN_SHIFT, 8                # 256 bytes of buffers per input byte
 
-	.set V_E, 0
-	.set V_SIZE, 8
-	.set V_CAP, 12
-	.set V_STATUS, 16
-	.set V_DYN, 20
-	.set V_GID, 24                      # merge group: versions C tree-sitter held as one stack head this step
-	.set V_NGID, 28                     # the group being formed by the current condense
+	.set MAXLINKS, 8                    # C's MAX_LINK_COUNT
+	.set MAXVERSIONS, 6                 # C's MAX_VERSION_COUNT
+	.set MAXSLICEVER, 10                # MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW
+
+	.set SN_STATE, 0
+	.set SN_NL, 2
+	.set SN_MARK, 3
+	.set SN_DYN, 4
+	.set SN_L0, 8
+	.set SN_L0T, 12
+	.set SN_POS, 16
+	.set SN_EXT, 20
+	.set SN_SIZE, 24
+	.set XB_NEXT, 56
+	.set XB_SIZE, 64
+	.set H_NODE, 0
+	.set H_DEAD, 4
+	.set SL_VER, 0
+	.set SL_OFF, 4
+	.set SL_LEN, 8
+	.set IT_NODE, 0
+	.set IT_COUNT, 4
+	.set IT_CELL, 8
 
 	.set N_SYM, 0
 	.set N_PROD, 2
@@ -138,7 +172,7 @@
 
 # Growable buffers share one layout: qword pointer at +0, dword capacity (entries) at +12.
 #
-# p_grow(rdi = buffer, esi = entries needed, ecx = log2 entry size): grow to at least esi
+# p_grow(rdi = buffer, esi = entries needed, ecx = entry size in bytes): grow to at least esi
 # entries (doubling, at least 256). The size increase is charged to C_MEMUSED against
 # C_MEMLIMIT before realloc, and pointer, capacity and usage are stored only after realloc
 # succeeds, so an aborted parse leaves a consistent context. Preserves every GPR.
@@ -156,7 +190,7 @@ p_grow:
 	jmp 1b
 2:	mov eax, edx
 	sub eax, r9d
-	shl rax, cl
+	imul rax, rcx
 	add rax, qword ptr [r15+C_MEMUSED]
 	cmp rax, qword ptr [r15+C_MEMLIMIT]
 	ja p_limit
@@ -165,7 +199,7 @@ p_grow:
 	push r8
 	push r8
 	mov esi, edx
-	shl rsi, cl
+	imul rsi, rcx
 	mov rdi, qword ptr [r8]
 	call realloc@PLT
 	pop r8
@@ -193,7 +227,7 @@ p_grow_nodes:
 	jb 1f
 	inc esi
 	lea rdi, [r15+C_NODES]
-	mov ecx, 5
+	mov ecx, 32
 	call p_grow
 1:	call p_set_navail
 	pop rcx
@@ -218,27 +252,19 @@ p_grow_kids:
 	add esi, edi
 	jc p_limit
 	lea rdi, [r15+C_KIDS]
-	mov ecx, 2
+	mov ecx, 4
 	call p_grow
 	pop rcx
 	pop rsi
 	pop rdi
 	ret
 
-# p_grow_vstack(rdi = version, esi = entries). Preserves every GPR.
-p_grow_vstack:
-	push rcx
-	mov ecx, 3
-	call p_grow
-	pop rcx
-	ret
-
-# p_grow_estk(esi = frames): 16-byte frames used by emit and subtree compare. Preserves every GPR.
+# p_grow_estk(esi = frames): 16-byte frames used by emit, subtree compare, stack collection and link merging. Preserves every GPR.
 p_grow_estk:
 	push rdi
 	push rcx
 	lea rdi, [r15+C_ESTK]
-	mov ecx, 4
+	mov ecx, 16
 	call p_grow
 	pop rcx
 	pop rdi
@@ -254,40 +280,16 @@ p_oom:
 	movsxd rax, eax
 	jmp .Lmain_ret
 
+
 # p_release: free every buffer the context owns and zero their capacities (r15 = ctx).
 p_release:
-	push rbx
-	push r12
-	push r13
-	lea rbx, [r15 + C_VERS]
-	lea r12, [r15 + C_SIZE]
-1:	mov rdi, qword ptr [rbx+V_E]
+	.irp off, C_NODES, C_KIDS, C_ESTK, C_OUT, C_SN, C_XB, C_HEADS, C_SLICES, C_CELLS, C_SLK
+	mov rdi, qword ptr [r15+\off]
 	call free@PLT
-	mov qword ptr [rbx+V_E], 0
-	mov qword ptr [rbx+V_SIZE], 0
-	add rbx, 32
-	cmp rbx, r12
-	jb 1b
-	mov rdi, qword ptr [r15+C_NODES]
-	call free@PLT
-	mov rdi, qword ptr [r15+C_KIDS]
-	call free@PLT
-	mov rdi, qword ptr [r15+C_ESTK]
-	call free@PLT
-	mov rdi, qword ptr [r15+C_OUT]
-	call free@PLT
-	mov qword ptr [r15+C_OUT], 0
-	mov dword ptr [r15+C_OUTCAP], 0
-	mov qword ptr [r15+C_NODES], 0
-	mov qword ptr [r15+C_KIDS], 0
-	mov qword ptr [r15+C_ESTK], 0
-	mov dword ptr [r15+C_NCAP], 0
-	mov dword ptr [r15+C_KCAP], 0
-	mov dword ptr [r15+C_ESTKCAP], 0
+	mov qword ptr [r15+\off], 0
+	mov dword ptr [r15+\off+12], 0
+	.endr
 	mov qword ptr [r15+C_MEMUSED], 0
-	pop r13
-	pop r12
-	pop rbx
 	ret
 
 # ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
@@ -428,9 +430,236 @@ p_can_reuse:
 	ret
 
 # ---------------------------------------------------------------------------
-# p_shift(rdi = version ptr, esi = state, edx = symbol, ecx = extra flag)
-# leaf start/end come from the token cache
+# Graph-structured stack: C tree-sitter's stack.c, the parts error-free parsing needs.
+# Stack nodes are recycled: a single-version reduce frees the nodes it pops (p_reduce_fast), and
+# p_gc collects the rest when the arena is full. Trees live in the append-only tree arena.
 # ---------------------------------------------------------------------------
+
+# p_snode_slow -> eax = a free stack node. Preserves every GPR but rax.
+p_snode_slow:
+	mov eax, dword ptr [r15+C_SFREE]
+	test eax, eax
+	jnz 2f
+	mov eax, dword ptr [r15+C_SNN]
+	cmp eax, dword ptr [r15+C_SNCAP]
+	jae 1f
+	inc dword ptr [r15+C_SNN]
+	ret
+1:	call p_gc
+	jmp p_snode_slow
+2:	push rcx
+	lea rcx, [rax+rax*2]
+	shl rcx, 3
+	add rcx, qword ptr [r15+C_SN]
+	mov ecx, dword ptr [rcx+SN_EXT]
+	mov dword ptr [r15+C_SFREE], ecx
+	pop rcx
+	ret
+
+# p_gc: mark the stack nodes reachable from the heads, sweep the rest into the free list (with
+# their extension blocks), and double the arena if less than half of it came free. Only called
+# from allocation, when every live node is reachable from a head. Preserves every GPR.
+p_gc:
+	push rax
+	push rbx
+	push rcx
+	push rdx
+	push rsi
+	push rdi
+	push r8
+	push r9
+	push r10
+	push r11
+	mov r8, qword ptr [r15+C_SN]
+	mov byte ptr [r8+SN_MARK], 1          # the base node
+	xor esi, esi                          # mark stack depth (u32 entries in the frame buffer)
+	xor edx, edx
+.Lgc_root:
+	cmp edx, dword ptr [r15+C_NH]
+	jae .Lgc_sweep
+	mov rax, qword ptr [r15+C_HEADS]
+	mov eax, dword ptr [rax + rdx*8 + H_NODE]
+	inc edx
+	call .Lgc_mark
+.Lgc_drain:
+	test esi, esi
+	jz .Lgc_root
+	dec esi
+	mov rbx, qword ptr [r15+C_ESTK]
+	mov eax, dword ptr [rbx + rsi*4]
+	lea rcx, [rax+rax*2]
+	lea rcx, [r8 + rcx*8]
+	movzx edi, byte ptr [rcx+SN_NL]
+	test edi, edi
+	jz .Lgc_drain
+	mov eax, dword ptr [rcx+SN_L0]
+	call .Lgc_mark
+	dec edi
+	jz .Lgc_drain
+	mov r9d, dword ptr [rcx+SN_EXT]
+	shl r9, 6
+	add r9, qword ptr [r15+C_XB]
+1:	mov eax, dword ptr [r9]
+	call .Lgc_mark
+	add r9, 8
+	dec edi
+	jnz 1b
+	jmp .Lgc_drain
+.Lgc_sweep:
+	xor r10d, r10d                        # free list
+	xor r11d, r11d                        # nodes free
+	mov ecx, dword ptr [r15+C_SNN]
+	mov rdx, qword ptr [r15+C_XB]
+3:	dec ecx
+	jz 6f
+	lea rax, [rcx+rcx*2]
+	lea rax, [r8 + rax*8]
+	cmp byte ptr [rax+SN_MARK], 0
+	je 4f
+	mov byte ptr [rax+SN_MARK], 0
+	jmp 3b
+4:	cmp byte ptr [rax+SN_NL], 1
+	jbe 5f
+	mov edi, dword ptr [rax+SN_EXT]
+	mov ebx, edi
+	shl rbx, 6
+	mov esi, dword ptr [r15+C_XFREE]
+	mov dword ptr [rdx + rbx + XB_NEXT], esi
+	mov dword ptr [r15+C_XFREE], edi
+5:	mov byte ptr [rax+SN_NL], 0
+	mov dword ptr [rax+SN_EXT], r10d
+	mov r10d, ecx
+	inc r11d
+	jmp 3b
+6:	mov byte ptr [r8+SN_MARK], 0
+	mov dword ptr [r15+C_SFREE], r10d
+	mov eax, dword ptr [r15+C_SNN]
+	shr eax, 1
+	cmp r11d, eax
+	jae 7f
+	lea rdi, [r15+C_SN]
+	mov esi, dword ptr [r15+C_SNCAP]
+	inc esi
+	mov ecx, SN_SIZE
+	call p_grow
+7:	pop r11
+	pop r10
+	pop r9
+	pop r8
+	pop rdi
+	pop rsi
+	pop rdx
+	pop rcx
+	pop rbx
+	pop rax
+	ret
+# .Lgc_mark(eax = node): mark it and push it on the mark stack if unmarked. Clobbers rax, rbx, r10.
+.Lgc_mark:
+	lea r10, [rax+rax*2]
+	cmp byte ptr [r8 + r10*8 + SN_MARK], 0
+	jne 2f
+	mov byte ptr [r8 + r10*8 + SN_MARK], 1
+	lea r10d, [rsi+4]
+	shr r10d, 2                           # 16-byte frames holding esi + 1 entries
+	cmp r10d, dword ptr [r15+C_ESTKCAP]
+	jbe 1f
+	push rsi
+	mov esi, r10d
+	call p_grow_estk
+	pop rsi
+1:	mov rbx, qword ptr [r15+C_ESTK]
+	mov dword ptr [rbx + rsi*4], eax
+	inc esi
+2:	ret
+
+# p_ext_new -> eax = an extension block. Preserves every GPR but rax.
+p_ext_new:
+	mov eax, dword ptr [r15+C_XFREE]
+	test eax, eax
+	jz 1f
+	push rcx
+	mov ecx, eax
+	shl rcx, 6
+	add rcx, qword ptr [r15+C_XB]
+	mov ecx, dword ptr [rcx+XB_NEXT]
+	mov dword ptr [r15+C_XFREE], ecx
+	pop rcx
+	ret
+1:	mov eax, dword ptr [r15+C_XN]
+	cmp eax, dword ptr [r15+C_XBCAP]
+	jae 2f
+	inc dword ptr [r15+C_XN]
+	ret
+2:	push rdi
+	push rsi
+	push rcx
+	lea rdi, [r15+C_XB]
+	lea esi, [rax+1]
+	mov ecx, XB_SIZE
+	call p_grow
+	pop rcx
+	pop rsi
+	pop rdi
+	jmp 1b
+
+# p_link_addr(edi = stack node, esi = link index) -> rax = address of the link. Preserves the rest.
+p_link_addr:
+	mov eax, edi
+	lea rax, [rax+rax*2]
+	shl rax, 3
+	add rax, qword ptr [r15+C_SN]
+	test esi, esi
+	jnz 1f
+	add rax, SN_L0
+	ret
+1:	push rcx
+	mov ecx, dword ptr [rax+SN_EXT]
+	shl rcx, 6
+	add rcx, qword ptr [r15+C_XB]
+	mov eax, esi
+	lea rax, [rcx + rax*8 - 8]
+	pop rcx
+	ret
+
+# p_push(edi = version, esi = tree, edx = state): ts_stack_push. Clobbers caller-saved registers.
+	.p2align 4
+p_push:
+	mov edi, edi
+	mov eax, dword ptr [r15+C_SFREE]
+	test eax, eax
+	jz 1f
+	lea r8, [rax+rax*2]
+	shl r8, 3
+	add r8, qword ptr [r15+C_SN]
+	mov ecx, dword ptr [r8+SN_EXT]
+	mov dword ptr [r15+C_SFREE], ecx
+	jmp 2f
+1:	call p_snode_slow
+	lea r8, [rax+rax*2]
+	shl r8, 3
+	add r8, qword ptr [r15+C_SN]
+2:	mov r9, qword ptr [r15+C_HEADS]
+	mov ecx, dword ptr [r9 + rdi*8 + H_NODE]  # previous node
+	mov dword ptr [r9 + rdi*8 + H_NODE], eax
+	or edx, 0x10000                       # state, one link, unmarked
+	mov dword ptr [r8+SN_STATE], edx
+	mov dword ptr [r8+SN_L0], ecx
+	mov dword ptr [r8+SN_L0T], esi
+	mov dword ptr [r8+SN_EXT], 0
+	mov r10, qword ptr [r15+C_NODES]
+	mov r11d, esi
+	shl r11, 5
+	mov edx, dword ptr [r10 + r11 + N_END]
+	mov dword ptr [r8+SN_POS], edx
+	mov edx, dword ptr [r10 + r11 + N_DYN]
+	lea r11, [rcx+rcx*2]
+	shl r11, 3
+	add r11, qword ptr [r15+C_SN]
+	add edx, dword ptr [r11+SN_DYN]
+	mov dword ptr [r8+SN_DYN], edx
+	ret
+
+# p_shift(edi = version, esi = state, edx = symbol, ecx = extra flag): push a leaf for the cached token
 	.p2align 4
 p_shift:
 	test edx, edx
@@ -440,295 +669,490 @@ p_shift:
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9d, eax
 	shl r9, 5
-	add r9, r8                          # node ptr
-	mov r10d, ecx
-	shl r10d, 24
-	or r10d, edx                        # symbol | extra<<24 (prod = 0)
-	mov dword ptr [r9+N_SYM], r10d
+	add r9, r8
+	shl ecx, 24
+	or ecx, edx                         # symbol | extra<<24 (prod = 0)
+	mov dword ptr [r9+N_SYM], ecx
 	mov r10, qword ptr [r15+C_TSTART]   # start, end
 	mov qword ptr [r9+N_START], r10
 	mov qword ptr [r9+N_CC], 0
 	mov dword ptr [r9+N_DYN], 0
-	# push entry
-	shl ecx, 16
-	or esi, ecx
-	mov ecx, dword ptr [rdi+V_SIZE]
-	cmp ecx, dword ptr [rdi+V_CAP]
-	jb 2f
-	push rsi
-	lea esi, [rcx+1]
-	call p_grow_vstack
-	pop rsi
-2:	mov r8, qword ptr [rdi+V_E]
-	mov dword ptr [r8 + rcx*8], eax
-	mov dword ptr [r8 + rcx*8 + 4], esi
-	inc ecx
-	mov dword ptr [rdi+V_SIZE], ecx
-	ret
+	mov edx, esi
+	mov esi, eax
+	jmp p_push
 
-# ---------------------------------------------------------------------------
-# p_reduce(rdi = version ptr, rsi = reduce action word)
-# ---------------------------------------------------------------------------
+# p_reduce_fast(edi = version 0 of a one-version stack, rsi = reduce action) -> eax = 1 if done.
+# When every node on the popped path has one link, the path is the only one and only this
+# version reaches its nodes: the parent is built straight from it, the nodes go back to the free
+# list, and the version keeps its index (C pops into a new version and renumbers it to 0, which
+# is the same). eax = 0 leaves everything untouched for p_reduce_gss.
 	.p2align 4
-p_reduce:
+p_reduce_fast:
 	push rbx
 	push rbp
 	push r12
 	push r13
 	push r14
-	mov r12, rdi
-	mov r13, rsi
-	mov rbx, qword ptr [r12+V_E]
-	mov r14d, dword ptr [r12+V_SIZE]    # i
-	mov rax, r13
+	mov r12, rsi
+	mov eax, esi
 	shr eax, 8
-	movzx ecx, al                       # child count
-	test ecx, ecx
-	jz .Lrd_popped
-.Lrd_pop:
-	dec r14d
-	test byte ptr [rbx + r14*8 + 6], 1
-	jnz .Lrd_pop
-	dec ecx
-	jnz .Lrd_pop
-.Lrd_popped:
-	mov ebp, dword ptr [r12+V_SIZE]     # j
-.Lrd_trail:
-	cmp ebp, r14d
-	jbe .Lrd_trdone
-	test byte ptr [rbx + rbp*8 - 2], 1
-	jz .Lrd_trdone
-	dec ebp
-	jmp .Lrd_trail
-.Lrd_trdone:
-	# ensure kids capacity
-	mov edi, ebp
-	sub edi, r14d
+	movzx ebp, al                       # non-extra entries to pop
+	mov r8, qword ptr [r15+C_SN]
+	mov r9, qword ptr [r15+C_NODES]
+	mov rax, qword ptr [r15+C_HEADS]
+	mov ebx, dword ptr [rax+H_NODE]
+	mov ecx, ebx
+	xor edx, edx                        # non-extra entries seen
+	xor r13d, r13d                      # entries seen
+	xor r14d, r14d                      # trailing extras (above the topmost non-extra entry)
+.Lrf_walk:
+	cmp edx, ebp
+	je .Lrf_found
+	lea rax, [rcx+rcx*2]
+	lea r10, [r8 + rax*8]
+	cmp byte ptr [r10+SN_NL], 1
+	jne .Lrf_bail
+	mov eax, dword ptr [r10+SN_L0T]
+	mov ecx, dword ptr [r10+SN_L0]
+	inc r13d
+	shl rax, 5
+	cmp byte ptr [r9 + rax + N_EXTRA], 0
+	jne 1f
+	inc edx
+	jmp .Lrf_walk
+1:	test edx, edx
+	jnz .Lrf_walk
+	inc r14d
+	jmp .Lrf_walk
+.Lrf_bail:
+	xor eax, eax
+	jmp .Lrf_ret
+.Lrf_found:
+	mov ebp, ecx                        # base node
+	mov edi, r13d
+	sub edi, r14d                       # children
 	mov eax, dword ptr [r15+C_NK]
 	add eax, edi
 	cmp eax, dword ptr [r15+C_KCAP]
 	jbe 1f
 	call p_grow_kids
-1:	ALLOC_NODE eax
-	mov r8, qword ptr [r15+C_NODES]
-	mov r9d, eax                        # keep n in eax
-	shl r9, 5
-	add r9, r8                          # node ptr
-	mov rcx, r13
-	shr rcx, 16
-	movzx edx, cx                       # symbol
-	shr rcx, 16
-	movzx ecx, cl                       # production id
-	shl ecx, 16
-	or ecx, edx
-	mov dword ptr [r9+N_SYM], ecx       # symbol | prod<<16 | extra=0
-	mov ecx, ebp
-	sub ecx, r14d
-	mov dword ptr [r9+N_CC], ecx
-	mov r10, qword ptr [r15+C_KIDS]
-	mov r11d, dword ptr [r15+C_NK]
-	mov dword ptr [r9+N_CI], r11d
-	mov rdi, r13
-	sar rdi, 48                         # action dynamic precedence
-	mov edx, r14d
-	cmp edx, ebp
-	jae .Lrd_nokids
-.Lrd_kids:
-	mov esi, dword ptr [rbx + rdx*8]
-	mov dword ptr [r10 + r11*4], esi
-	inc r11d
-	shl rsi, 5
-	add edi, dword ptr [r8 + rsi + N_DYN]
-	inc edx
-	cmp edx, ebp
-	jb .Lrd_kids
-	mov dword ptr [r15+C_NK], r11d
-	mov dword ptr [r9+N_DYN], edi
-	mov esi, dword ptr [rbx + r14*8]
-	shl rsi, 5
-	mov ecx, dword ptr [r8 + rsi + N_START]
-	mov dword ptr [r9+N_START], ecx
-	mov esi, dword ptr [rbx + rbp*8 - 8]
-	shl rsi, 5
-	mov ecx, dword ptr [r8 + rsi + N_END]
-	mov dword ptr [r9+N_END], ecx
-	jmp .Lrd_goto
-.Lrd_nokids:
-	mov dword ptr [r9+N_DYN], edi
-	xor ecx, ecx
-	cmp r14d, 1
+1:	cmp r14d, dword ptr [r15+C_SLKCAP]
 	jbe 2f
-	mov esi, dword ptr [rbx + r14*8 - 8]
-	shl rsi, 5
-	mov ecx, dword ptr [r8 + rsi + N_END]
-2:	mov dword ptr [r9+N_START], ecx
-	mov dword ptr [r9+N_END], ecx
-.Lrd_goto:
-	# version dynsum += action dyn
-	mov rdi, r13
-	sar rdi, 48
-	add dword ptr [r12+V_DYN], edi
-	# next = goto(state below, symbol)
-	movzx ecx, word ptr [rbx + r14*8 - 4]
-	imul ecx, dword ptr [r15+C_LANG+L_NSYM]
-	mov rdx, r13
-	shr rdx, 16
-	movzx edx, dx
-	add ecx, edx
-	mov rdx, qword ptr [r15+C_LANG+L_PARSE_TABLE]
-	movzx ecx, word ptr [rdx + rcx*2]   # next state
-	mov edx, dword ptr [r12+V_SIZE]
-	sub edx, ebp                        # ntrail
-	jnz .Lrd_withtrail
-	mov dword ptr [rbx + r14*8], eax
-	mov dword ptr [rbx + r14*8 + 4], ecx
-	inc r14d
-	mov dword ptr [r12+V_SIZE], r14d
-	pop r14
-	pop r13
-	pop r12
-	pop rbp
-	pop rbx
-	ret
-.Lrd_withtrail:
-	# make room if i == j
-	mov esi, dword ptr [r12+V_SIZE]
-	inc esi
-	cmp esi, dword ptr [r12+V_CAP]
-	jbe 3f
-	mov rdi, r12
-	call p_grow_vstack
-	mov rbx, qword ptr [r12+V_E]
-3:	mov r8d, ecx
-	or r8d, 0x10000                     # extra entries' state
-	lea esi, [r14+1]
-	cmp esi, ebp
-	ja .Lrd_back
-	# forward copy e[i+1+k] = e[j+k]
-	xor edi, edi
-4:	lea r9d, [rbp + rdi]
-	mov r10d, dword ptr [rbx + r9*8]
-	lea r9d, [rsi + rdi]
-	mov dword ptr [rbx + r9*8], r10d
-	mov dword ptr [rbx + r9*8 + 4], r8d
-	inc edi
-	cmp edi, edx
-	jb 4b
-	jmp .Lrd_tdone
-.Lrd_back:
-	mov edi, edx
-5:	dec edi
-	lea r9d, [rbp + rdi]
-	mov r10d, dword ptr [rbx + r9*8]
-	lea r9d, [rsi + rdi]
-	mov dword ptr [rbx + r9*8], r10d
-	mov dword ptr [rbx + r9*8 + 4], r8d
-	test edi, edi
-	jnz 5b
-.Lrd_tdone:
-	mov dword ptr [rbx + r14*8], eax
-	mov dword ptr [rbx + r14*8 + 4], ecx
-	add esi, edx
-	mov dword ptr [r12+V_SIZE], esi
-	pop r14
-	pop r13
-	pop r12
-	pop rbp
-	pop rbx
-	ret
-
-# ---------------------------------------------------------------------------
-# p_copy_version(edi = source index) -> eax = new index or -1
-# ---------------------------------------------------------------------------
-p_copy_version:
-	mov eax, dword ptr [r15+C_NV]
-	cmp eax, MAXVERS
-	jae .Lcv_fail
-	mov ecx, eax
-	shl ecx, 5
-	lea r8, [r15 + C_VERS + rcx]        # dest
-	shl edi, 5
-	lea r9, [r15 + C_VERS + rdi]        # src
-	mov esi, dword ptr [r9+V_SIZE]
-	mov ecx, esi                        # copying costs one work unit per 16 entries
-	shr ecx, 4
-	sub qword ptr [r15+C_STEPS], rcx
-	jb p_limit
-	cmp esi, dword ptr [r8+V_CAP]
-	jbe 1f
-	mov rdi, r8
-	call p_grow_vstack
-1:	push rsi
 	push rdi
-	mov rdi, qword ptr [r8+V_E]
-	mov rsi, qword ptr [r9+V_E]
-	mov ecx, dword ptr [r9+V_SIZE]
-	rep movsq
+	lea rdi, [r15+C_SLK]
+	mov esi, r14d
+	mov ecx, 4
+	call p_grow
 	pop rdi
-	pop rsi
-	mov ecx, dword ptr [r9+V_SIZE]
-	mov dword ptr [r8+V_SIZE], ecx
-	mov dword ptr [r8+V_STATUS], 0
-	mov ecx, dword ptr [r9+V_DYN]
-	mov dword ptr [r8+V_DYN], ecx
-	mov ecx, dword ptr [r9+V_GID]
-	mov dword ptr [r8+V_GID], ecx
-	mov dword ptr [r8+V_NGID], 0
-	inc dword ptr [r15+C_NV]
-	ret
-.Lcv_fail:
-	mov dword ptr [r15+C_CAPHIT], 1
-	mov eax, -1
+2:	ALLOC_NODE eax                      # parent
+	push rax
+	push rdi
+	mov r8, qword ptr [r15+C_SN]
+	mov r9, qword ptr [r15+C_NODES]
+	mov r10, qword ptr [r15+C_KIDS]
+	mov r11, qword ptr [r15+C_SLK]
+	mov esi, dword ptr [r15+C_NK]
+	add esi, edi                        # children are written downward from here
+	xor edx, edx                        # entries taken
+	xor edi, edi                        # children's dynamic precedence
+	mov eax, dword ptr [r15+C_SFREE]
+	mov ecx, ebx
+.Lrf_take:
+	cmp edx, r13d
+	jae .Lrf_built
+	lea rbx, [rcx+rcx*2]
+	lea rbx, [r8 + rbx*8]
+	mov byte ptr [rbx+SN_NL], 0         # back to the free list
+	mov dword ptr [rbx+SN_EXT], eax
+	mov eax, ecx
+	mov ecx, dword ptr [rbx+SN_L0]
+	mov ebx, dword ptr [rbx+SN_L0T]
+	cmp edx, r14d
+	jae 3f
+	mov dword ptr [r11 + rdx*4], ebx    # a trailing extra, topmost first
+	inc edx
+	jmp .Lrf_take
+3:	dec esi
+	mov dword ptr [r10 + rsi*4], ebx
+	shl rbx, 5
+	add edi, dword ptr [r9 + rbx + N_DYN]
+	inc edx
+	jmp .Lrf_take
+.Lrf_built:
+	mov dword ptr [r15+C_SFREE], eax
+	mov rax, qword ptr [r15+C_HEADS]
+	mov dword ptr [rax+H_NODE], ebp
+	pop rcx                             # children
+	pop rax                             # parent
+	mov rdx, rax
+	shl rdx, 5
+	add rdx, r9
+	mov r11, r12
+	shr r11, 16
+	movzx ebx, r11w                     # symbol
+	shr r11, 16
+	movzx r11d, r11b
+	shl r11d, 16
+	or r11d, ebx
+	mov dword ptr [rdx+N_SYM], r11d
+	mov dword ptr [rdx+N_CC], ecx
+	mov esi, dword ptr [r15+C_NK]
+	mov dword ptr [rdx+N_CI], esi
+	test ecx, ecx
+	jz 4f
+	mov r11, r12
+	sar r11, 48
+	add edi, r11d                       # the action's dynamic precedence
+	mov dword ptr [rdx+N_DYN], edi
+	mov r11d, dword ptr [r10 + rsi*4]
+	shl r11, 5
+	mov r11d, dword ptr [r9 + r11 + N_START]
+	mov dword ptr [rdx+N_START], r11d
+	add esi, ecx
+	mov dword ptr [r15+C_NK], esi
+	mov r11d, dword ptr [r10 + rsi*4 - 4]
+	shl r11, 5
+	mov r11d, dword ptr [r9 + r11 + N_END]
+	mov dword ptr [rdx+N_END], r11d
+	jmp 5f
+4:	mov dword ptr [rdx+N_DYN], 0        # C reads a childless node's precedence as 0
+	lea r11, [rbp+rbp*2]
+	mov r11d, dword ptr [r8 + r11*8 + SN_POS]
+	mov dword ptr [rdx+N_START], r11d
+	mov dword ptr [rdx+N_END], r11d
+5:	lea r11, [rbp+rbp*2]
+	movzx ecx, word ptr [r8 + r11*8 + SN_STATE]
+	imul ecx, dword ptr [r15+C_LANG+L_NSYM]
+	add ecx, ebx
+	mov rdx, qword ptr [r15+C_LANG+L_PARSE_TABLE]
+	movzx ebp, word ptr [rdx + rcx*2]   # next state
+	xor edi, edi
+	mov esi, eax
+	mov edx, ebp
+	call p_push
+6:	test r14d, r14d                     # trailing extras go back on top, bottom first
+	jz 7f
+	dec r14d
+	mov rax, qword ptr [r15+C_SLK]
+	xor edi, edi
+	mov esi, dword ptr [rax + r14*4]
+	mov edx, ebp
+	call p_push
+	jmp 6b
+7:	mov eax, 1
+.Lrf_ret:
+	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	pop rbx
 	ret
 
-# p_remove_version(edi = index): rotate the version (and its buffer) to the end, nv--
-p_remove_version:
-	mov eax, dword ptr [r15+C_NV]
+# p_pop(edi = version, esi = goal, or -1 for every path to the base): stack__iter with
+# pop_count_callback or pop_all_callback. Up to 64 iterators walk the paths from the version's
+# head; each keeps its subtrees as a list of cells (tree, previous cell), so a fork copies one
+# index. An iterator that reaches its goal becomes a slice: its subtrees go to C_SLK bottom first,
+# grouped with earlier slices that stopped at the same node (ts_stack__add_slice).
+p_pop:
+	push rbx
+	push rbp
+	push r12
+	push r13
+	push r14
+	mov r12d, edi
+	mov r13d, esi
+	xor eax, eax
+	mov dword ptr [r15+C_NSL], eax
+	mov dword ptr [r15+C_NSLK], eax
+	mov dword ptr [r15+C_NCELL], 1
+	mov rax, qword ptr [r15+C_HEADS]
+	mov eax, dword ptr [rax + r12*8 + H_NODE]
+	mov dword ptr [r15+C_ITERS+IT_NODE], eax
+	mov qword ptr [r15+C_ITERS+IT_COUNT], 0     # and IT_CELL
+	mov dword ptr [r15+C_NI], 1
+.Lpo_round:
+	mov ebp, dword ptr [r15+C_NI]
+	test ebp, ebp
+	jz .Lpo_done
+	xor ebx, ebx
+.Lpo_it:
+	cmp ebx, ebp
+	jae .Lpo_round
+	sub qword ptr [r15+C_STEPS], 1
+	jb p_limit
+	mov eax, ebx
+	shl eax, 4
+	lea r14, [r15 + C_ITERS + rax]
+	mov ecx, dword ptr [r14+IT_NODE]
+	lea rax, [rcx+rcx*2]
+	shl rax, 3
+	add rax, qword ptr [r15+C_SN]
+	movzx edx, byte ptr [rax+SN_NL]
+	test r13d, r13d
+	js 1f
+	cmp dword ptr [r14+IT_COUNT], r13d
+	je .Lpo_pop
+	test edx, edx
+	jnz .Lpo_follow
+	jmp .Lpo_stop
+1:	test edx, edx
+	jnz .Lpo_follow
+.Lpo_pop:
+	mov edi, ecx
+	mov esi, dword ptr [r14+IT_CELL]
+	call p_pop_slice
+.Lpo_stop:
+	dec ebp
+	mov eax, dword ptr [r15+C_NI]
 	dec eax
-	mov dword ptr [r15+C_NV], eax
-	shl edi, 5
-	lea r8, [r15 + C_VERS + rdi]
-	movdqu xmm0, xmmword ptr [r8]
-	movdqu xmm1, xmmword ptr [r8+16]
-	shl eax, 5
-	lea r9, [r15 + C_VERS + rax]        # last slot
-1:	cmp r8, r9
-	jae 2f
-	movdqu xmm2, xmmword ptr [r8+32]
-	movdqu xmm3, xmmword ptr [r8+48]
-	movdqu xmmword ptr [r8], xmm2
-	movdqu xmmword ptr [r8+16], xmm3
-	add r8, 32
-	jmp 1b
-2:	movdqu xmmword ptr [r9], xmm0
-	movdqu xmmword ptr [r9+16], xmm1
-	ret
-
-# p_swap_versions(edi, esi)
-p_swap_versions:
-	shl edi, 5
-	shl esi, 5
-	lea r8, [r15 + C_VERS + rdi]
-	lea r9, [r15 + C_VERS + rsi]
-	movdqu xmm0, xmmword ptr [r8]
-	movdqu xmm1, xmmword ptr [r8+16]
-	movdqu xmm2, xmmword ptr [r9]
-	movdqu xmm3, xmmword ptr [r9+16]
+	mov dword ptr [r15+C_NI], eax
+	mov ecx, ebx
+2:	cmp ecx, eax
+	jae .Lpo_it
+	mov edx, ecx
+	shl edx, 4
+	movdqu xmm0, xmmword ptr [r15 + C_ITERS + rdx + 16]
+	movdqu xmmword ptr [r15 + C_ITERS + rdx], xmm0
+	inc ecx
+	jmp 2b
+.Lpo_follow:
+	mov r8d, 1                          # links 1.. fork new iterators first
+3:	cmp r8d, edx
+	jae 4f
+	mov eax, dword ptr [r15+C_NI]
+	cmp eax, MAXITERS
+	jae 5f
+	inc dword ptr [r15+C_NI]
+	shl eax, 4
+	lea r9, [r15 + C_ITERS + rax]
+	movdqu xmm0, xmmword ptr [r14]
 	movdqu xmmword ptr [r9], xmm0
-	movdqu xmmword ptr [r9+16], xmm1
-	movdqu xmmword ptr [r8], xmm2
-	movdqu xmmword ptr [r8+16], xmm3
+	mov edi, ecx
+	mov esi, r8d
+	call p_link_addr
+	call .Lpo_step
+5:	inc r8d
+	jmp 3b
+4:	lea rax, [rcx+rcx*2]                # link 0 moves this iterator
+	shl rax, 3
+	add rax, qword ptr [r15+C_SN]
+	add rax, SN_L0
+	mov r9, r14
+	call .Lpo_step
+	inc ebx
+	jmp .Lpo_it
+.Lpo_done:
+	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	pop rbx
+	ret
+# .Lpo_step(r9 = iterator, rax = link): follow it, prepending its tree to the iterator's list
+# and counting it unless extra. Clobbers rax, rsi, rdi, r10, r11.
+.Lpo_step:
+	mov r10d, dword ptr [rax]
+	mov r11d, dword ptr [rax+4]
+	mov dword ptr [r9+IT_NODE], r10d
+	mov esi, dword ptr [r15+C_NCELL]
+	cmp esi, dword ptr [r15+C_CELLCAP]
+	jb 1f
+	push rcx
+	push rsi
+	lea rdi, [r15+C_CELLS]
+	inc esi
+	mov ecx, 8
+	call p_grow
+	pop rsi
+	pop rcx
+1:	mov rdi, qword ptr [r15+C_CELLS]
+	mov dword ptr [rdi + rsi*8], r11d
+	mov eax, dword ptr [r9+IT_CELL]
+	mov dword ptr [rdi + rsi*8 + 4], eax
+	mov dword ptr [r9+IT_CELL], esi
+	inc esi
+	mov dword ptr [r15+C_NCELL], esi
+	mov rdi, qword ptr [r15+C_NODES]
+	shl r11, 5
+	cmp byte ptr [rdi + r11 + N_EXTRA], 0
+	jne 2f
+	inc dword ptr [r9+IT_COUNT]
+2:	ret
+
+# p_pop_slice(edi = stack node, esi = cell list): store the list as a slice, bottom first, and
+# file it after the last slice that stopped at the same node, or under a new version.
+p_pop_slice:
+	push rbx
+	push r12
+	push r13
+	mov r12d, edi
+	mov rcx, qword ptr [r15+C_CELLS]
+	xor edx, edx                        # length
+	mov eax, esi
+1:	test eax, eax
+	jz 2f
+	inc edx
+	mov eax, dword ptr [rcx + rax*8 + 4]
+	jmp 1b
+2:	mov eax, edx                        # a work unit per 16 subtrees
+	shr eax, 4
+	sub qword ptr [r15+C_STEPS], rax
+	jb p_limit
+	mov r13d, dword ptr [r15+C_NSLK]
+	lea ebx, [r13 + rdx]
+	cmp ebx, dword ptr [r15+C_SLKCAP]
+	jbe 3f
+	push rsi
+	push rdx
+	lea rdi, [r15+C_SLK]
+	mov esi, ebx
+	mov ecx, 4
+	call p_grow
+	pop rdx
+	pop rsi
+3:	mov dword ptr [r15+C_NSLK], ebx
+	mov rcx, qword ptr [r15+C_CELLS]
+	mov rdi, qword ptr [r15+C_SLK]
+	mov ebx, r13d
+	mov eax, esi
+4:	test eax, eax                       # the newest cell holds the bottom tree
+	jz 5f
+	mov r8d, dword ptr [rcx + rax*8]
+	mov dword ptr [rdi + rbx*4], r8d
+	inc ebx
+	mov eax, dword ptr [rcx + rax*8 + 4]
+	jmp 4b
+5:	mov ebx, edx                        # length
+	mov ecx, dword ptr [r15+C_NSL]
+	lea esi, [rcx+1]
+	cmp esi, dword ptr [r15+C_SLCAP]
+	jbe 6f
+	lea rdi, [r15+C_SLICES]
+	push rcx
+	mov ecx, 16
+	call p_grow
+	pop rcx
+6:	mov r8, qword ptr [r15+C_SLICES]
+	mov r9, qword ptr [r15+C_HEADS]
+7:	test ecx, ecx
+	jz .Lps_new
+	dec ecx
+	mov eax, ecx
+	shl eax, 4
+	mov eax, dword ptr [r8 + rax + SL_VER]
+	cmp dword ptr [r9 + rax*8 + H_NODE], r12d
+	jne 7b
+	inc ecx                             # insert at ecx under version eax
+	mov edx, dword ptr [r15+C_NSL]
+8:	cmp edx, ecx
+	jbe .Lps_put
+	mov esi, edx
+	shl esi, 4
+	movdqu xmm0, xmmword ptr [r8 + rsi - 16]
+	movdqu xmmword ptr [r8 + rsi], xmm0
+	dec edx
+	jmp 8b
+.Lps_new:
+	mov edi, r12d
+	call p_add_version
+	mov ecx, dword ptr [r15+C_NSL]
+.Lps_put:
+	shl ecx, 4
+	mov dword ptr [r8 + rcx + SL_VER], eax
+	mov dword ptr [r8 + rcx + SL_OFF], r13d
+	mov dword ptr [r8 + rcx + SL_LEN], ebx
+	inc dword ptr [r15+C_NSL]
+	pop r13
+	pop r12
+	pop rbx
 	ret
 
-# p_vpos(rdi = version ptr) -> eax = byte position (end of top node)
-.macro VPOS vreg, o64, o32, tmp
-	mov \o32, dword ptr [\vreg+V_SIZE]
-	mov \tmp, qword ptr [\vreg+V_E]
-	mov \o32, dword ptr [\tmp + \o64*8 - 8]
-	shl \o64, 5
-	mov \tmp, qword ptr [r15+C_NODES]
-	mov \o32, dword ptr [\tmp + \o64 + N_END]
-.endm
+# p_add_version(edi = stack node) -> eax = new active version at the end. Preserves the rest.
+p_add_version:
+	mov eax, dword ptr [r15+C_NH]
+	push rsi
+	push rcx
+	lea esi, [rax+1]
+	cmp esi, dword ptr [r15+C_HCAP]
+	jbe 1f
+	push rdi
+	lea rdi, [r15+C_HEADS]
+	mov ecx, 8
+	call p_grow
+	pop rdi
+1:	mov rcx, qword ptr [r15+C_HEADS]
+	mov dword ptr [rcx + rax*8 + H_NODE], edi
+	mov dword ptr [rcx + rax*8 + H_DEAD], 0
+	inc dword ptr [r15+C_NH]
+	pop rcx
+	pop rsi
+	ret
+
+# p_remove_version(edi = version). Clobbers rax, rcx, rdx, rdi.
+p_remove_version:
+	mov edi, edi
+	mov eax, dword ptr [r15+C_NH]
+	dec eax
+	mov dword ptr [r15+C_NH], eax
+	mov rcx, qword ptr [r15+C_HEADS]
+1:	cmp edi, eax
+	jae 2f
+	mov rdx, qword ptr [rcx + rdi*8 + 8]
+	mov qword ptr [rcx + rdi*8], rdx
+	inc edi
+	jmp 1b
+2:	ret
+
+# p_renumber(edi = v1, esi = v2 < v1): v1's head replaces v2's. Clobbers rax, rcx, rdx, rdi.
+p_renumber:
+	mov edi, edi
+	mov esi, esi
+	mov rcx, qword ptr [r15+C_HEADS]
+	mov rax, qword ptr [rcx + rdi*8]
+	mov qword ptr [rcx + rsi*8], rax
+	jmp p_remove_version
+
+# p_link_equiv(edi = node a, esi = tree a, edx = node b, ecx = tree b) -> eax:
+# stack__subtree_is_equivalent (padding is the tree's start minus its predecessor's position).
+# Clobbers rcx, rdx, rsi, rdi, r8-r11.
+p_link_equiv:
+	mov eax, 1
+	cmp esi, ecx
+	je 9f
+	xor eax, eax
+	mov r8, qword ptr [r15+C_NODES]
+	shl rsi, 5
+	add rsi, r8
+	shl rcx, 5
+	add rcx, r8
+	mov r9d, dword ptr [rsi+N_SYM]
+	mov r10d, dword ptr [rcx+N_SYM]
+	cmp r9w, r10w
+	jne 9f
+	shr r9d, 24
+	shr r10d, 24
+	cmp r9d, r10d
+	jne 9f
+	mov r9d, dword ptr [rsi+N_CC]
+	cmp r9d, dword ptr [rcx+N_CC]
+	jne 9f
+	mov r9d, dword ptr [rsi+N_END]
+	sub r9d, dword ptr [rsi+N_START]
+	mov r10d, dword ptr [rcx+N_END]
+	sub r10d, dword ptr [rcx+N_START]
+	cmp r9d, r10d
+	jne 9f
+	mov r11, qword ptr [r15+C_SN]
+	lea r8, [rdi+rdi*2]
+	mov r9d, dword ptr [rsi+N_START]
+	sub r9d, dword ptr [r11 + r8*8 + SN_POS]
+	lea r8, [rdx+rdx*2]
+	mov r10d, dword ptr [rcx+N_START]
+	sub r10d, dword ptr [r11 + r8*8 + SN_POS]
+	cmp r9d, r10d
+	jne 9f
+	mov eax, 1
+9:	ret
 
 # ---------------------------------------------------------------------------
 # p_subtree_compare(edi = a, esi = b) -> eax in {-1, 0, 1}
@@ -812,142 +1236,164 @@ p_subtree_compare:
 	pop rbx
 	ret
 
-# p_equivalent(edi = a, esi = b) -> eax (same symbol, span, child count, extra)
-p_equivalent:
-	mov r8, qword ptr [r15+C_NODES]
-	shl rdi, 5
-	shl rsi, 5
-	xor eax, eax
-	mov ecx, dword ptr [r8 + rdi + N_SYM]
-	and ecx, 0xFF00FFFF                 # symbol + extra (ignore production id)
-	mov edx, dword ptr [r8 + rsi + N_SYM]
-	and edx, 0xFF00FFFF
-	cmp ecx, edx
-	jne 1f
-	mov rcx, qword ptr [r8 + rdi + N_START]
-	cmp rcx, qword ptr [r8 + rsi + N_START]
-	jne 1f
-	mov ecx, dword ptr [r8 + rdi + N_CC]
-	cmp ecx, dword ptr [r8 + rsi + N_CC]
-	jne 1f
-	mov eax, 1
-1:	ret
 
-# ---------------------------------------------------------------------------
-# p_try_converge(edi = j, esi = i) -> eax 1 if converged (caller removes i), else 0
-# ---------------------------------------------------------------------------
-p_try_converge:
+# p_add_link(edi = node, esi = link node, edx = link tree): stack_node_add_link. Its recursion
+# (merging the links of two mergeable predecessors) runs on 32-byte frames in the frame buffer, so
+# depth cannot overflow the native stack. Each call costs a work unit.
+p_add_link:
 	push rbx
 	push rbp
 	push r12
 	push r13
 	push r14
-	shl edi, 5
-	lea r12, [r15 + C_VERS + rdi]       # X
-	shl esi, 5
-	lea r13, [r15 + C_VERS + rsi]       # Y
-	xor eax, eax
-	mov ecx, dword ptr [r12+V_SIZE]
-	cmp ecx, dword ptr [r13+V_SIZE]
-	jne .Ltc_ret
-	mov r8, qword ptr [r12+V_E]
-	mov r9, qword ptr [r13+V_E]
-	lea ebp, [rcx-1]                    # hi
-	mov ebx, ebp                        # k
-	xor r14d, r14d                      # lo, the lowest differing entry (0: none)
-	mov r10d, dword ptr [r12+V_GID]     # a group shares entries above its ambiguity, so scan past
-	cmp r10d, dword ptr [r13+V_GID]     # them; other versions share only their common prefix
-	sete r11b
-	test r10d, r10d
-	setnz r10b
-	and r10b, r11b
-.Ltc_scan:
-	test ebx, ebx
-	jz .Ltc_scanned
-	mov edx, dword ptr [r8 + rbx*8]
-	cmp edx, dword ptr [r9 + rbx*8]
-	jne .Ltc_diff
-	test r10b, r10b
-	jz .Ltc_scanned
-	dec ebx
-	jmp .Ltc_scan
-.Ltc_diff:
-	mov edx, dword ptr [r8 + rbx*8 + 4]
-	cmp edx, dword ptr [r9 + rbx*8 + 4]
-	jne .Ltc_ret                        # eax = 0
-	mov r14d, ebx
-	dec ebx
-	jmp .Ltc_scan
-.Ltc_scanned:
-	mov eax, ebp                        # the scan costs one work unit per 16 entries
-	sub eax, ebx
-	shr eax, 4
-	sub qword ptr [r15+C_STEPS], rax
+	sub rsp, 16                         # [rsp] = depth
+	mov dword ptr [rsp], 0
+	mov r12d, edi                       # self
+	mov r13d, esi                       # link node
+	mov r14d, edx                       # link tree
+.Lal_call:
+	sub qword ptr [r15+C_STEPS], 1
 	jb p_limit
-	mov eax, 1
-	test r14d, r14d
-	jz .Ltc_ret                         # identical
-	mov ebx, r14d
-	lea r14d, [rbx+1]
-.Ltc_eq:
-	cmp r14d, ebp
-	ja .Ltc_pick
-	mov r8, qword ptr [r12+V_E]
-	mov r9, qword ptr [r13+V_E]
-	mov edi, dword ptr [r8 + r14*8]
-	mov esi, dword ptr [r9 + r14*8]
-	call p_equivalent
+	cmp r13d, r12d
+	je .Lal_ret
+	xor ebp, ebp                        # i over self's links
+.Lal_scan:
+	mov eax, r12d
+	lea rax, [rax+rax*2]
+	mov rcx, qword ptr [r15+C_SN]
+	movzx eax, byte ptr [rcx + rax*8 + SN_NL]
+	cmp ebp, eax
+	jae .Lal_append
+	mov edi, r12d
+	mov esi, ebp
+	call p_link_addr
+	mov ebx, dword ptr [rax]            # existing link's node
+	mov edi, ebx
+	mov esi, dword ptr [rax+4]
+	mov edx, r13d
+	mov ecx, r14d
+	call p_link_equiv
 	test eax, eax
-	jz .Ltc_ret
-	inc r14d
-	jmp .Ltc_eq
-.Ltc_pick:
-	mov r8, qword ptr [r12+V_E]
-	mov r9, qword ptr [r13+V_E]
-	mov edi, dword ptr [r8 + rbx*8]     # xn
-	mov esi, dword ptr [r9 + rbx*8]     # yn
-	mov r10, qword ptr [r15+C_NODES]
-	mov eax, edi
-	shl rax, 5
-	mov ecx, dword ptr [r10 + rax + N_DYN]
-	mov eax, esi
-	shl rax, 5
-	mov edx, dword ptr [r10 + rax + N_DYN]
+	jz .Lal_snext
+	cmp ebx, r13d
+	jne .Lal_mergeable
+	mov edi, r12d                       # the same two nodes: keep the higher-precedence subtree
+	mov esi, ebp
+	call p_link_addr
+	mov r8, qword ptr [r15+C_NODES]
+	mov ecx, dword ptr [rax+4]
+	shl rcx, 5
+	mov edx, r14d
+	shl rdx, 5
+	mov ecx, dword ptr [r8 + rcx + N_DYN]
+	mov edx, dword ptr [r8 + rdx + N_DYN]
 	cmp edx, ecx
-	jg .Ltc_ywins
-	jl .Ltc_xwins
-	mov eax, dword ptr [r12+V_GID]      # same group: C kept both links and picked at a reduce
-	test eax, eax                       # by compare; otherwise its merge drops Y's equivalent link
-	jz 1f
-	cmp eax, dword ptr [r13+V_GID]
-	je 2f
-1:	push rdi
-	push rsi
-	call p_equivalent
-	pop rsi
-	pop rdi
+	jle .Lal_ret
+	mov dword ptr [rax+4], r14d
+	mov r9, qword ptr [r15+C_SN]
+	mov eax, r13d
+	lea rax, [rax+rax*2]
+	add edx, dword ptr [r9 + rax*8 + SN_DYN]
+	mov eax, r12d
+	lea rax, [rax+rax*2]
+	mov dword ptr [r9 + rax*8 + SN_DYN], edx
+	jmp .Lal_ret
+.Lal_mergeable:
+	mov r9, qword ptr [r15+C_SN]
+	mov eax, ebx
+	lea rax, [rax+rax*2]
+	lea rax, [r9 + rax*8]
+	mov ecx, r13d
+	lea rcx, [rcx+rcx*2]
+	lea rcx, [r9 + rcx*8]
+	mov edx, dword ptr [rax+SN_POS]
+	cmp edx, dword ptr [rcx+SN_POS]
+	jne .Lal_snext
+	mov dx, word ptr [rax+SN_STATE]
+	cmp dx, word ptr [rcx+SN_STATE]
+	jne .Lal_snext
+	xor ebp, ebp                        # j over the link node's links, added to the existing node
+.Lal_rloop:
+	mov eax, r13d
+	lea rax, [rax+rax*2]
+	mov rcx, qword ptr [r15+C_SN]
+	movzx eax, byte ptr [rcx + rax*8 + SN_NL]
+	cmp ebp, eax
+	jae .Lal_rdone
+	mov eax, dword ptr [rsp]
+	lea esi, [rax*2 + 2]
+	cmp esi, dword ptr [r15+C_ESTKCAP]
+	jbe 1f
+	call p_grow_estk
+1:	mov rcx, qword ptr [r15+C_ESTK]
+	shl eax, 5
+	mov dword ptr [rcx + rax], r12d
+	mov dword ptr [rcx + rax + 4], r13d
+	mov dword ptr [rcx + rax + 8], r14d
+	mov dword ptr [rcx + rax + 12], ebx
+	mov dword ptr [rcx + rax + 16], ebp
+	inc dword ptr [rsp]
+	mov edi, r13d
+	mov esi, ebp
+	call p_link_addr
+	mov r12d, ebx
+	mov r13d, dword ptr [rax]
+	mov r14d, dword ptr [rax+4]
+	jmp .Lal_call
+.Lal_snext:
+	inc ebp
+	jmp .Lal_scan
+.Lal_append:
+	cmp eax, MAXLINKS
+	jae .Lal_ret
+	mov ebp, eax
+	cmp eax, 1
+	jne 2f
+	call p_ext_new
+	mov ecx, r12d
+	lea rcx, [rcx+rcx*2]
+	mov rdx, qword ptr [r15+C_SN]
+	mov dword ptr [rdx + rcx*8 + SN_EXT], eax
+2:	mov edi, r12d
+	mov esi, ebp
+	call p_link_addr
+	mov dword ptr [rax], r13d
+	mov dword ptr [rax+4], r14d
+	mov ecx, r12d
+	lea rcx, [rcx+rcx*2]
+	mov rdx, qword ptr [r15+C_SN]
+	inc byte ptr [rdx + rcx*8 + SN_NL]
+.Lal_rdone:                             # self's precedence = max(self, link node + link tree)
+	mov r8, qword ptr [r15+C_NODES]
+	mov r9, qword ptr [r15+C_SN]
+	mov eax, r14d
+	shl rax, 5
+	mov edx, dword ptr [r8 + rax + N_DYN]
+	mov eax, r13d
+	lea rax, [rax+rax*2]
+	add edx, dword ptr [r9 + rax*8 + SN_DYN]
+	mov eax, r12d
+	lea rax, [rax+rax*2]
+	cmp edx, dword ptr [r9 + rax*8 + SN_DYN]
+	jle .Lal_ret
+	mov dword ptr [r9 + rax*8 + SN_DYN], edx
+.Lal_ret:
+	mov eax, dword ptr [rsp]
 	test eax, eax
-	jnz .Ltc_xwins
-2:	call p_subtree_compare
-	cmp eax, 0
-	jle .Ltc_xwins
-.Ltc_ywins:
-	mov r8, qword ptr [r12+V_E]
-	mov r9, qword ptr [r13+V_E]
-	mov r10, qword ptr [r15+C_NODES]
-	mov eax, dword ptr [r8 + rbx*8]
-	shl rax, 5
-	mov ecx, dword ptr [r10 + rax + N_DYN]
-	sub dword ptr [r12+V_DYN], ecx
-	mov rax, qword ptr [r9 + rbx*8]
-	mov qword ptr [r8 + rbx*8], rax
-	mov eax, eax
-	shl rax, 5
-	mov ecx, dword ptr [r10 + rax + N_DYN]
-	add dword ptr [r12+V_DYN], ecx
-.Ltc_xwins:
-	mov eax, 1
-.Ltc_ret:
+	jz .Lal_exit
+	dec eax
+	mov dword ptr [rsp], eax
+	shl eax, 5
+	mov rcx, qword ptr [r15+C_ESTK]
+	mov r12d, dword ptr [rcx + rax]
+	mov r13d, dword ptr [rcx + rax + 4]
+	mov r14d, dword ptr [rcx + rax + 8]
+	mov ebx, dword ptr [rcx + rax + 12]
+	mov ebp, dword ptr [rcx + rax + 16]
+	inc ebp
+	jmp .Lal_rloop
+.Lal_exit:
+	add rsp, 16
 	pop r14
 	pop r13
 	pop r12
@@ -955,132 +1401,532 @@ p_try_converge:
 	pop rbx
 	ret
 
-# ---------------------------------------------------------------------------
-# p_accept(edi = version index): build root, select against finished tree
-# ---------------------------------------------------------------------------
+# p_merge(edi = a, esi = b) -> eax: ts_stack_merge. If both versions are live with heads in the
+# same state at the same position, b's head links join a's head and b is removed.
+p_merge:
+	push rbx
+	push rbp
+	push r12
+	push r13
+	mov r12d, edi
+	mov r13d, esi
+	mov rcx, qword ptr [r15+C_HEADS]
+	xor eax, eax
+	cmp dword ptr [rcx + r12*8 + H_DEAD], 0
+	jne 9f
+	cmp dword ptr [rcx + r13*8 + H_DEAD], 0
+	jne 9f
+	mov edx, dword ptr [rcx + r12*8 + H_NODE]
+	mov esi, dword ptr [rcx + r13*8 + H_NODE]
+	mov r8, qword ptr [r15+C_SN]
+	lea rdx, [rdx+rdx*2]
+	lea rsi, [rsi+rsi*2]
+	mov edi, dword ptr [r8 + rdx*8 + SN_POS]
+	cmp edi, dword ptr [r8 + rsi*8 + SN_POS]
+	jne 9f
+	mov di, word ptr [r8 + rdx*8 + SN_STATE]
+	cmp di, word ptr [r8 + rsi*8 + SN_STATE]
+	jne 9f
+	xor ebp, ebp
+1:	mov rcx, qword ptr [r15+C_HEADS]
+	mov ebx, dword ptr [rcx + r13*8 + H_NODE]
+	mov eax, ebx
+	lea rax, [rax+rax*2]
+	mov rdx, qword ptr [r15+C_SN]
+	movzx eax, byte ptr [rdx + rax*8 + SN_NL]
+	cmp ebp, eax
+	jae 2f
+	mov edi, ebx
+	mov esi, ebp
+	call p_link_addr
+	mov esi, dword ptr [rax]
+	mov edx, dword ptr [rax+4]
+	mov rcx, qword ptr [r15+C_HEADS]
+	mov edi, dword ptr [rcx + r12*8 + H_NODE]
+	call p_add_link
+	inc ebp
+	jmp 1b
+2:	mov edi, r13d
+	call p_remove_version
+	mov eax, 1
+9:	pop r13
+	pop r12
+	pop rbp
+	pop rbx
+	ret
+
+# p_strip(edi = offset, esi = length) -> eax = the slice's length without its trailing extras.
+# Clobbers rcx, rdx, r8.
+p_strip:
+	mov eax, esi
+	mov rcx, qword ptr [r15+C_SLK]
+	mov r8, qword ptr [r15+C_NODES]
+1:	test eax, eax
+	jz 2f
+	lea edx, [rdi + rax - 1]
+	mov edx, dword ptr [rcx + rdx*4]
+	shl rdx, 5
+	cmp byte ptr [r8 + rdx + N_EXTRA], 0
+	je 2f
+	dec eax
+	jmp 1b
+2:	ret
+
+# p_build(edi = offset, esi = count, edx = base position, rcx = reduce action) -> eax = tree:
+# ts_subtree_new_node over C_SLK[offset..offset+count). Its precedence is the children's sum.
+p_build:
+	push rbx
+	push r12
+	mov r12, rcx
+	mov ebx, edx
+	mov eax, dword ptr [r15+C_NK]
+	add eax, esi
+	cmp eax, dword ptr [r15+C_KCAP]
+	jbe 1f
+	push rdi
+	mov edi, esi
+	call p_grow_kids
+	pop rdi
+1:	ALLOC_NODE eax
+	mov r8, qword ptr [r15+C_NODES]
+	mov r9d, eax
+	shl r9, 5
+	add r9, r8
+	mov rcx, r12
+	shr rcx, 16
+	movzx edx, cx
+	shr rcx, 16
+	movzx ecx, cl
+	shl ecx, 16
+	or ecx, edx
+	mov dword ptr [r9+N_SYM], ecx
+	mov dword ptr [r9+N_CC], esi
+	mov r10, qword ptr [r15+C_KIDS]
+	mov r11d, dword ptr [r15+C_NK]
+	mov dword ptr [r9+N_CI], r11d
+	mov rcx, qword ptr [r15+C_SLK]
+	xor edx, edx
+	test esi, esi
+	jz 3f
+2:	mov r12d, dword ptr [rcx + rdi*4]
+	mov dword ptr [r10 + r11*4], r12d
+	shl r12, 5
+	add edx, dword ptr [r8 + r12 + N_DYN]
+	inc edi
+	inc r11d
+	dec esi
+	jnz 2b
+	mov dword ptr [r9+N_DYN], edx
+	mov dword ptr [r15+C_NK], r11d
+	mov ecx, dword ptr [r9+N_CI]
+	mov ecx, dword ptr [r10 + rcx*4]
+	shl rcx, 5
+	mov ecx, dword ptr [r8 + rcx + N_START]
+	mov dword ptr [r9+N_START], ecx
+	mov ecx, dword ptr [r10 + r11*4 - 4]
+	shl rcx, 5
+	mov ecx, dword ptr [r8 + rcx + N_END]
+	mov dword ptr [r9+N_END], ecx
+	jmp 4f
+3:	mov dword ptr [r9+N_DYN], 0
+	mov dword ptr [r9+N_START], ebx
+	mov dword ptr [r9+N_END], ebx
+4:	pop r12
+	pop rbx
+	ret
+
+# p_select(edi = left tree, esi = offset, edx = count) -> eax = 1 to take the alternative
+# children C_SLK[offset..offset+count) instead: ts_parser__select_children with no error costs.
+p_select:
+	push rbx
+	push rbp
+	push r12
+	push r13
+	push r14
+	mov r12d, edi
+	mov r13d, esi
+	mov r14d, edx
+	mov rcx, qword ptr [r15+C_SLK]
+	mov r8, qword ptr [r15+C_NODES]
+	xor eax, eax                        # the alternative's precedence
+	xor ebx, ebx
+1:	cmp ebx, r14d
+	jae 2f
+	lea edx, [r13 + rbx]
+	mov edx, dword ptr [rcx + rdx*4]
+	shl rdx, 5
+	add eax, dword ptr [r8 + rdx + N_DYN]
+	inc ebx
+	jmp 1b
+2:	mov edx, r12d
+	shl rdx, 5
+	add rdx, r8
+	cmp eax, dword ptr [rdx+N_DYN]
+	jg .Lse_right
+	jl .Lse_left
+	mov ecx, dword ptr [rdx+N_CC]       # ts_subtree_compare(left, scratch node of the same symbol)
+	cmp ecx, r14d
+	jb .Lse_left
+	ja .Lse_right
+	mov ebp, dword ptr [rdx+N_CI]
+	xor ebx, ebx
+3:	cmp ebx, r14d
+	jae .Lse_left
+	mov rcx, qword ptr [r15+C_KIDS]
+	lea eax, [rbp + rbx]
+	mov edi, dword ptr [rcx + rax*4]
+	mov rcx, qword ptr [r15+C_SLK]
+	lea eax, [r13 + rbx]
+	mov esi, dword ptr [rcx + rax*4]
+	call p_subtree_compare
+	test eax, eax
+	jg .Lse_right
+	jl .Lse_left
+	inc ebx
+	jmp 3b
+.Lse_right:
+	mov eax, 1
+	jmp 4f
+.Lse_left:
+	xor eax, eax
+4:	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	pop rbx
+	ret
+
+# p_reduce_gss(edi = version, rsi = reduce action) -> eax = the first new version, or -1 if the
+# reduce made none (every result merged into an earlier version): ts_parser__reduce.
+	.set RG_INIT, 0
+	.set RG_SLVER, 4
+	.set RG_SV, 8
+	.set RG_BOFF, 12
+	.set RG_BN, 16
+	.set RG_BLEN, 20
+	.set RG_BASEPOS, 24
+	.set RG_AOFF, 28
+	.set RG_AN, 32
+	.set RG_ALEN, 36
+	.set RG_NEXT, 40
+p_reduce_gss:
+	push rbx
+	push rbp
+	push r12
+	push r13
+	push r14
+	sub rsp, 48
+	mov r12d, edi
+	mov r13, rsi
+	mov eax, dword ptr [r15+C_NH]
+	mov dword ptr [rsp+RG_INIT], eax
+	mov esi, r13d
+	shr esi, 8
+	movzx esi, sil
+	call p_pop
+	xor ebp, ebp                        # versions removed so far
+	xor ebx, ebx                        # slice
+.Lrg_slice:
+	cmp ebx, dword ptr [r15+C_NSL]
+	jae .Lrg_done
+	mov rax, qword ptr [r15+C_SLICES]
+	mov ecx, ebx
+	shl ecx, 4
+	mov edx, dword ptr [rax + rcx + SL_VER]
+	mov dword ptr [rsp+RG_SLVER], edx
+	sub edx, ebp
+	mov dword ptr [rsp+RG_SV], edx
+	cmp edx, MAXSLICEVER
+	jbe .Lrg_keep
+	mov edi, edx                        # too many versions: drop this one and its other slices
+	call p_remove_version
+	inc ebp
+1:	lea eax, [rbx+1]
+	cmp eax, dword ptr [r15+C_NSL]
+	jae 2f
+	mov rcx, qword ptr [r15+C_SLICES]
+	shl eax, 4
+	mov eax, dword ptr [rcx + rax + SL_VER]
+	cmp eax, dword ptr [rsp+RG_SLVER]
+	jne 2f
+	inc ebx
+	jmp 1b
+2:	inc ebx
+	jmp .Lrg_slice
+.Lrg_keep:
+	mov edi, dword ptr [rax + rcx + SL_OFF]
+	mov esi, dword ptr [rax + rcx + SL_LEN]
+	mov dword ptr [rsp+RG_BOFF], edi
+	mov dword ptr [rsp+RG_BLEN], esi
+	call p_strip
+	mov dword ptr [rsp+RG_BN], eax
+	mov rcx, qword ptr [r15+C_HEADS]
+	mov edx, dword ptr [rsp+RG_SV]
+	mov edx, dword ptr [rcx + rdx*8 + H_NODE]
+	lea rdx, [rdx+rdx*2]
+	mov rcx, qword ptr [r15+C_SN]
+	mov edx, dword ptr [rcx + rdx*8 + SN_POS]
+	mov dword ptr [rsp+RG_BASEPOS], edx
+	mov edi, dword ptr [rsp+RG_BOFF]
+	mov esi, eax
+	mov rcx, r13
+	call p_build
+	mov r14d, eax
+.Lrg_alt:                               # further slices that stopped at the same node
+	lea eax, [rbx+1]
+	cmp eax, dword ptr [r15+C_NSL]
+	jae .Lrg_push
+	mov rcx, qword ptr [r15+C_SLICES]
+	shl eax, 4
+	mov edx, dword ptr [rcx + rax + SL_VER]
+	cmp edx, dword ptr [rsp+RG_SLVER]
+	jne .Lrg_push
+	inc ebx
+	mov edi, dword ptr [rcx + rax + SL_OFF]
+	mov esi, dword ptr [rcx + rax + SL_LEN]
+	mov dword ptr [rsp+RG_AOFF], edi
+	mov dword ptr [rsp+RG_ALEN], esi
+	call p_strip
+	mov dword ptr [rsp+RG_AN], eax
+	mov edi, r14d
+	mov esi, dword ptr [rsp+RG_AOFF]
+	mov edx, eax
+	call p_select
+	test eax, eax
+	jz .Lrg_alt
+	mov edi, dword ptr [rsp+RG_AOFF]
+	mov esi, dword ptr [rsp+RG_AN]
+	mov edx, dword ptr [rsp+RG_BASEPOS]
+	mov rcx, r13
+	call p_build
+	mov r14d, eax
+	mov eax, dword ptr [rsp+RG_AOFF]
+	mov dword ptr [rsp+RG_BOFF], eax
+	mov eax, dword ptr [rsp+RG_AN]
+	mov dword ptr [rsp+RG_BN], eax
+	mov eax, dword ptr [rsp+RG_ALEN]
+	mov dword ptr [rsp+RG_BLEN], eax
+	jmp .Lrg_alt
+.Lrg_push:
+	mov rax, qword ptr [r15+C_NODES]
+	mov ecx, r14d
+	shl rcx, 5
+	cmp dword ptr [rax + rcx + N_CC], 0
+	je 3f
+	mov rdx, r13
+	sar rdx, 48
+	add dword ptr [rax + rcx + N_DYN], edx
+3:	mov rcx, qword ptr [r15+C_HEADS]
+	mov edx, dword ptr [rsp+RG_SV]
+	mov edx, dword ptr [rcx + rdx*8 + H_NODE]
+	lea rdx, [rdx+rdx*2]
+	mov rcx, qword ptr [r15+C_SN]
+	movzx ecx, word ptr [rcx + rdx*8 + SN_STATE]
+	imul ecx, dword ptr [r15+C_LANG+L_NSYM]
+	mov rdx, r13
+	shr rdx, 16
+	movzx edx, dx
+	add ecx, edx
+	mov rdx, qword ptr [r15+C_LANG+L_PARSE_TABLE]
+	movzx ecx, word ptr [rdx + rcx*2]
+	mov dword ptr [rsp+RG_NEXT], ecx
+	mov edi, dword ptr [rsp+RG_SV]
+	mov esi, r14d
+	mov edx, ecx
+	call p_push
+	mov r14d, dword ptr [rsp+RG_BN]     # trailing extras
+4:	cmp r14d, dword ptr [rsp+RG_BLEN]
+	jae 5f
+	mov rax, qword ptr [r15+C_SLK]
+	mov ecx, dword ptr [rsp+RG_BOFF]
+	add ecx, r14d
+	mov esi, dword ptr [rax + rcx*4]
+	mov edi, dword ptr [rsp+RG_SV]
+	mov edx, dword ptr [rsp+RG_NEXT]
+	call p_push
+	inc r14d
+	jmp 4b
+5:	xor r14d, r14d                      # merge into the first earlier version that accepts it
+6:	cmp r14d, dword ptr [rsp+RG_SV]
+	jae 7f
+	cmp r14d, r12d
+	je 8f
+	mov edi, r14d
+	mov esi, dword ptr [rsp+RG_SV]
+	call p_merge
+	test eax, eax
+	jz 8f
+	inc ebp
+	jmp 7f
+8:	inc r14d
+	jmp 6b
+7:	inc ebx
+	jmp .Lrg_slice
+.Lrg_done:
+	mov eax, -1
+	mov ecx, dword ptr [rsp+RG_INIT]
+	cmp dword ptr [r15+C_NH], ecx
+	cmova eax, ecx
+	add rsp, 48
+	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	pop rbx
+	ret
+
+# p_accept(edi = version): ts_parser__accept. Push the eof leaf, pop every path to the base, build
+# a root per path (the topmost non-extra tree's children spliced among the other trees) and keep
+# the best against the finished tree.
 p_accept:
 	push rbx
 	push rbp
 	push r12
 	push r13
 	push r14
-	shl edi, 5
-	lea r12, [r15 + C_VERS + rdi]
-	# push eof leaf (symbol 0, extra) with state 1
-	mov rdi, r12
+	mov r12d, edi
 	mov esi, 1
 	xor edx, edx
 	mov ecx, 1
 	call p_shift
-	mov rbx, qword ptr [r12+V_E]
-	mov ecx, dword ptr [r12+V_SIZE]
-	# find topmost non-extra entry r (>= 1)
-	lea ebp, [rcx-1]
-1:	test byte ptr [rbx + rbp*8 + 6], 1
-	jz 2f
-	dec ebp
-	jnz 1b
-	ud2                                 # no root (cannot happen)
-2:	mov r13d, dword ptr [rbx + rbp*8]   # root node index
-	# total children = (size - 1) - 1 + root.cc
+	mov edi, r12d
+	mov esi, -1
+	call p_pop
+	xor ebx, ebx
+.Lac_slice:
+	cmp ebx, dword ptr [r15+C_NSL]
+	jae .Lac_end
+	mov rax, qword ptr [r15+C_SLICES]
+	mov ecx, ebx
+	shl ecx, 4
+	mov r13d, dword ptr [rax + rcx + SL_OFF]
+	mov r14d, dword ptr [rax + rcx + SL_LEN]
+	mov rcx, qword ptr [r15+C_SLK]
 	mov r8, qword ptr [r15+C_NODES]
-	mov eax, r13d
-	shl rax, 5
-	mov r14d, dword ptr [r8 + rax + N_CC]
-	lea edi, [rcx - 2 + r14]
+	mov ebp, r14d
+1:	test ebp, ebp
+	jz .Lac_next
+	dec ebp
+	lea eax, [r13 + rbp]
+	mov eax, dword ptr [rcx + rax*4]
+	mov rdx, rax
+	shl rdx, 5
+	cmp byte ptr [r8 + rdx + N_EXTRA], 0
+	jne 1b
+	push rax                            # the old root
+	push rax
+	mov edi, dword ptr [r8 + rdx + N_CC]
+	lea edi, [rdi + r14 - 1]            # children of the new root
 	mov eax, dword ptr [r15+C_NK]
 	add eax, edi
 	cmp eax, dword ptr [r15+C_KCAP]
-	jbe 3f
+	jbe 2f
 	call p_grow_kids
-3:	ALLOC_NODE eax
-	push rax
-	push rax
+2:	ALLOC_NODE eax
+	pop rdx
+	pop rdx
 	mov r8, qword ptr [r15+C_NODES]
-	mov ecx, r13d
-	shl rcx, 5
-	mov r9d, eax
-	shl r9, 5
-	movdqu xmm0, xmmword ptr [r8 + rcx]
-	movdqu xmm1, xmmword ptr [r8 + rcx + 16]
-	movdqu xmmword ptr [r8 + r9], xmm0
-	movdqu xmmword ptr [r8 + r9 + 16], xmm1
-	add r9, r8                          # new root ptr
-	add rcx, r8                         # old root ptr
 	mov r10, qword ptr [r15+C_KIDS]
+	mov rcx, qword ptr [r15+C_SLK]
 	mov r11d, dword ptr [r15+C_NK]
-	mov dword ptr [r9+N_CI], r11d
-	mov esi, r11d                       # first child slot
-	mov edx, 1                          # k
-4:	cmp edx, dword ptr [r12+V_SIZE]
-	jae 6f
-	cmp edx, ebp
-	jne 5f
-	# splice root's children
-	mov edi, dword ptr [rcx+N_CI]
-	mov eax, r14d
-	test eax, eax
-	jz 7f
-8:	mov r8d, dword ptr [r10 + rdi*4]
-	mov dword ptr [r10 + r11*4], r8d
-	inc edi
-	inc r11d
-	dec eax
-	jnz 8b
-7:	inc edx
-	jmp 4b
-5:	mov eax, dword ptr [rbx + rdx*8]
-	mov dword ptr [r10 + r11*4], eax
-	inc r11d
-	inc edx
-	jmp 4b
-6:	mov eax, r11d
-	sub eax, esi
-	mov dword ptr [r9+N_CC], eax
+	xor r9d, r9d                        # precedence: the children's sum
+	xor esi, esi
+3:	cmp esi, ebp
+	jae 4f
+	lea edi, [r13 + rsi]
+	mov edi, dword ptr [rcx + rdi*4]
+	call .Lac_put
+	inc esi
+	jmp 3b
+4:	mov rdi, rdx
+	shl rdi, 5
+	mov esi, dword ptr [r8 + rdi + N_CI]
+	push rbx
+	mov ebx, dword ptr [r8 + rdi + N_CC]
+5:	test ebx, ebx
+	jz 6f
+	mov edi, dword ptr [r10 + rsi*4]
+	call .Lac_put
+	inc esi
+	dec ebx
+	jmp 5b
+6:	pop rbx
+	lea esi, [rbp+1]
+7:	cmp esi, r14d
+	jae 8f
+	lea edi, [r13 + rsi]
+	mov edi, dword ptr [rcx + rdi*4]
+	call .Lac_put
+	inc esi
+	jmp 7b
+8:	mov rdi, rax
+	shl rdi, 5
+	add rdi, r8                         # new root
+	shl rdx, 5
+	mov esi, dword ptr [r8 + rdx + N_SYM]
+	and esi, 0xFFFFFF                   # symbol and production id, not extra
+	mov dword ptr [rdi+N_SYM], esi
+	mov esi, dword ptr [r15+C_NK]
+	mov dword ptr [rdi+N_CI], esi
+	mov edx, r11d
+	sub edx, esi
+	mov dword ptr [rdi+N_CC], edx
+	mov dword ptr [rdi+N_DYN], r9d
+	mov edx, dword ptr [r10 + rsi*4]
+	shl rdx, 5
+	mov edx, dword ptr [r8 + rdx + N_START]
+	mov dword ptr [rdi+N_START], edx
+	mov edx, dword ptr [r10 + r11*4 - 4]
+	shl rdx, 5
+	mov edx, dword ptr [r8 + rdx + N_END]
+	mov dword ptr [rdi+N_END], edx
 	mov dword ptr [r15+C_NK], r11d
-	mov r8, qword ptr [r15+C_NODES]
-	mov eax, dword ptr [r10 + rsi*4]
-	shl rax, 5
-	mov eax, dword ptr [r8 + rax + N_START]
-	mov dword ptr [r9+N_START], eax
-	mov eax, dword ptr [r10 + r11*4 - 4]
-	shl rax, 5
-	mov eax, dword ptr [r8 + rax + N_END]
-	mov dword ptr [r9+N_END], eax
-	pop rax
-	pop rax
-	# select against finished
-	mov ecx, dword ptr [r15+C_FINISHED]
+	mov ecx, dword ptr [r15+C_FINISHED] # ts_parser__select_tree(finished, root)
 	test ecx, ecx
 	js .Lac_take
-	mov edx, ecx
+	mov rdx, rcx
 	shl rdx, 5
-	mov edx, dword ptr [r8 + rdx + N_DYN]
-	mov esi, dword ptr [r9+N_DYN]
-	cmp esi, edx
+	cmp r9d, dword ptr [r8 + rdx + N_DYN]
 	jg .Lac_take
-	jl .Lac_done
-	mov ebx, eax
+	jl .Lac_next
+	push rax
+	push rax
 	mov edi, ecx
 	mov esi, eax
 	call p_subtree_compare
-	cmp eax, 0
-	jle .Lac_done
-	mov eax, ebx
+	mov ecx, eax
+	pop rax
+	pop rax
+	cmp ecx, 0
+	jle .Lac_next
 .Lac_take:
 	mov dword ptr [r15+C_FINISHED], eax
-.Lac_done:
-	mov dword ptr [r12+V_STATUS], 2
+.Lac_next:
+	inc ebx
+	jmp .Lac_slice
+.Lac_end:
+	mov rax, qword ptr [r15+C_SLICES]
+	mov edi, dword ptr [rax+SL_VER]
+	call p_remove_version
+	mov rcx, qword ptr [r15+C_HEADS]
+	mov dword ptr [rcx + r12*8 + H_DEAD], 1
 	pop r14
 	pop r13
 	pop r12
 	pop rbp
 	pop rbx
 	ret
+# .Lac_put(edi = tree): append to the new root's children. Uses r8, r10, r11, r9. Clobbers rdi.
+.Lac_put:
+	mov dword ptr [r10 + r11*4], edi
+	inc r11d
+	shl rdi, 5
+	add r9d, dword ptr [r8 + rdi + N_DYN]
+	ret
 
 # ---------------------------------------------------------------------------
-# p_advance(edi = version index): lex (or reuse cached token), apply actions until a shift,
-# accept or error.  Mirrors ts_parser__advance.
+# p_advance(edi = version): lex (or reuse the cached token) and apply actions until a shift,
+# accept or error. Mirrors ts_parser__advance.
 # ---------------------------------------------------------------------------
 	.p2align 4
 p_advance:
@@ -1089,17 +1935,17 @@ p_advance:
 	push r12
 	push r13
 	push r14
-	sub rsp, 16                         # [rsp] = k, [rsp+4] = count, [rsp+8] = last_red
+	sub rsp, 16                         # [rsp] = k, [rsp+4] = count, [rsp+8] = last reduction version
 	sub qword ptr [r15+C_STEPS], 1
 	jb p_limit
 	mov ebx, edi
-	mov eax, edi
-	shl eax, 5
-	lea r12, [r15 + C_VERS + rax]
-	mov ecx, dword ptr [r12+V_SIZE]
-	mov rdx, qword ptr [r12+V_E]
-	movzx r13d, word ptr [rdx + rcx*8 - 4]      # state
-	VPOS r12, rsi, esi, rdx
+	mov rax, qword ptr [r15+C_HEADS]
+	mov eax, dword ptr [rax + rbx*8 + H_NODE]
+	lea rax, [rax+rax*2]
+	shl rax, 3
+	add rax, qword ptr [r15+C_SN]
+	movzx r13d, word ptr [rax+SN_STATE]
+	mov esi, dword ptr [rax+SN_POS]
 	cmp dword ptr [r15+C_TOKVALID], 0
 	je .Lad_lex
 	cmp esi, dword ptr [r15+C_TPOS]
@@ -1131,19 +1977,17 @@ p_advance:
 	movzx ecx, al                       # count
 	cmp ecx, 1
 	jne .Lad_multi
-	# ---- single action fast path
 	mov rsi, qword ptr [rdx + rbp*8 + 8]
 	test esi, 3
 	jnz .Lad_single_nonshift
-	# shift
-	mov ecx, esi
+	mov ecx, esi                        # shift
 	shr ecx, 2
 	and ecx, 1
 	mov eax, esi
 	shr eax, 16
 	test ecx, ecx
 	cmovnz eax, r13d
-	mov rdi, r12
+	mov edi, ebx
 	mov esi, eax
 	mov edx, r14d
 	call p_shift
@@ -1153,11 +1997,29 @@ p_advance:
 	and eax, 3
 	cmp eax, 1
 	jne .Lad_acc_or_rec
-	mov rdi, r12
-	call p_reduce
-	mov ecx, dword ptr [r12+V_SIZE]
-	mov rdx, qword ptr [r12+V_E]
-	movzx r13d, word ptr [rdx + rcx*8 - 4]
+	cmp dword ptr [r15+C_NH], 1
+	jne 1f
+	mov edi, ebx
+	push rsi
+	push rsi
+	call p_reduce_fast
+	pop rsi
+	pop rsi
+	test eax, eax
+	jnz .Lad_reduced
+1:	mov edi, ebx
+	call p_reduce_gss
+	test eax, eax
+	js .Lad_noaction
+	mov edi, eax
+	mov esi, ebx
+	call p_renumber
+.Lad_reduced:
+	mov rax, qword ptr [r15+C_HEADS]
+	mov eax, dword ptr [rax + rbx*8 + H_NODE]
+	lea rax, [rax+rax*2]
+	mov rdx, qword ptr [r15+C_SN]
+	movzx r13d, word ptr [rdx + rax*8 + SN_STATE]
 	jmp .Lad_lookup
 .Lad_acc_or_rec:
 	cmp eax, 2
@@ -1165,7 +2027,6 @@ p_advance:
 	mov edi, ebx
 	call p_accept
 	jmp .Lad_ret
-	# ---- zero or multiple actions
 .Lad_multi:
 	test ecx, ecx
 	jz .Lad_noaction
@@ -1185,28 +2046,11 @@ p_advance:
 	jz .Lad_mshift
 	cmp eax, 1
 	jne .Lad_macc
-	# reduce on a copy
-	push rsi
-	push rsi
 	mov edi, ebx
-	call p_copy_version
-	pop rsi
-	pop rsi
+	call p_reduce_gss
 	test eax, eax
-	js .Lad_dead
-	mov ecx, eax                        # a fork of a group by action k: the same C version as
-	shl ecx, 5                          # the other members' k-th forks, so derive the id from k
-	mov edx, dword ptr [r15 + C_VERS + rcx + V_GID]
-	test edx, edx
-	jz 1f
-	imul edx, edx, -1640531535
-	add edx, dword ptr [rsp]
-	or edx, 1
-	mov dword ptr [r15 + C_VERS + rcx + V_GID], edx
-1:	mov dword ptr [rsp+8], eax
-	shl eax, 5
-	lea rdi, [r15 + C_VERS + rax]
-	call p_reduce
+	js .Lad_mloop
+	mov dword ptr [rsp+8], eax
 	jmp .Lad_mloop
 .Lad_mshift:
 	mov ecx, esi
@@ -1216,7 +2060,7 @@ p_advance:
 	shr eax, 16
 	test ecx, ecx
 	cmovnz eax, r13d
-	mov rdi, r12
+	mov edi, ebx
 	mov esi, eax
 	mov edx, r14d
 	call p_shift
@@ -1228,19 +2072,12 @@ p_advance:
 	call p_accept
 	jmp .Lad_ret
 .Lad_mdone:
-	mov eax, dword ptr [rsp+8]
-	test eax, eax
-	js .Lad_noaction
-	# renumber: last reduction version replaces version ebx
-	mov edi, ebx
-	mov esi, eax
-	call p_swap_versions
 	mov edi, dword ptr [rsp+8]
-	call p_remove_version
-	mov ecx, dword ptr [r12+V_SIZE]
-	mov rdx, qword ptr [r12+V_E]
-	movzx r13d, word ptr [rdx + rcx*8 - 4]
-	jmp .Lad_lookup
+	test edi, edi
+	js .Lad_noaction
+	mov esi, ebx
+	call p_renumber
+	jmp .Lad_reduced
 .Lad_noaction:
 	# keyword -> word token fallback
 	cmp dword ptr [r15+C_TKW], 0
@@ -1269,7 +2106,8 @@ p_advance:
 	mov ebp, eax
 	jmp .Lad_entry
 .Lad_dead:
-	mov dword ptr [r12+V_STATUS], 1
+	mov rax, qword ptr [r15+C_HEADS]
+	mov dword ptr [rax + rbx*8 + H_DEAD], 1
 .Lad_ret:
 	add rsp, 16
 	pop r14
@@ -1292,7 +2130,7 @@ p_emit:
 	cmp esi, dword ptr [r15+C_OUTCAP]
 	jbe 1f
 	lea rdi, [r15+C_OUT]
-	mov ecx, 4
+	mov ecx, 16
 	call p_grow
 1:	mov r8, qword ptr [r15+C_NODES]
 	mov r12, qword ptr [r15+C_OUT]
@@ -1400,7 +2238,7 @@ p_emit:
 	push rsi
 	lea rdi, [r15+C_OUT]
 	lea esi, [r14+1]
-	mov ecx, 4
+	mov ecx, 16
 	call p_grow
 	pop rsi
 	pop rdi
@@ -1456,7 +2294,7 @@ tsasm_parse:
 	mov rax, rsi
 	shl rax, 6
 	add rax, 10000
-	mov qword ptr [r15+C_STEPS], rax    # advance budget: 64 * len + 10000
+	mov qword ptr [r15+C_STEPS], rax    # work budget: 64 * len + 10000
 	mov rax, rsi
 	shl rax, 5
 	add rax, 100000
@@ -1472,57 +2310,63 @@ tsasm_parse:
 	mov qword ptr [r15+C_SRC], rdi
 	add rsi, rdi
 	mov qword ptr [r15+C_END], rsi
-	mov dword ptr [r15+C_NN], 0
-	mov dword ptr [r15+C_NK], 0
+	xor eax, eax
+	mov dword ptr [r15+C_NN], eax
+	mov dword ptr [r15+C_NK], eax
+	mov dword ptr [r15+C_TOKVALID], eax
+	mov dword ptr [r15+C_LASTPOS], eax
+	mov dword ptr [r15+C_SFREE], eax
+	mov dword ptr [r15+C_XFREE], eax
 	mov dword ptr [r15+C_FINISHED], -1
-	mov dword ptr [r15+C_TOKVALID], 0
-	mov dword ptr [r15+C_LASTPOS], 0
-	mov dword ptr [r15+C_CAPHIT], 0
-	mov qword ptr [r15+C_NEXTGID], 0    # and C_GLIVE
-	# node 0: zeroed stack-base node
+	mov dword ptr [r15+C_SNN], 1
+	mov dword ptr [r15+C_XN], 1
+	# tree 0: the zeroed tree under the base stack node
 	ALLOC_NODE eax
 	mov r8, qword ptr [r15+C_NODES]
 	pxor xmm0, xmm0
 	movdqu xmmword ptr [r8], xmm0
 	movdqu xmmword ptr [r8+16], xmm0
-	# version 0: base entry (node 0, state 1)
-	mov dword ptr [r15+C_NV], 1
-	lea r12, [r15 + C_VERS]
-	mov dword ptr [r12+V_STATUS], 0
-	mov dword ptr [r12+V_DYN], 0
-	mov qword ptr [r12+V_GID], 0        # and V_NGID
-	cmp dword ptr [r12+V_CAP], 0
-	jne 1f
-	mov rdi, r12
-	mov esi, 256
-	call p_grow_vstack
-1:	mov rax, qword ptr [r12+V_E]
-	mov dword ptr [rax], 0
-	mov dword ptr [rax+4], 1
-	mov dword ptr [r12+V_SIZE], 1
+	# stack node 0: the base (state 1, position 0, no links); one active version on it
+	cmp dword ptr [r15+C_SNCAP], 0
+	jne 2f
+	lea rdi, [r15+C_SN]
+	mov esi, 1
+	mov ecx, SN_SIZE
+	call p_grow
+2:	mov r8, qword ptr [r15+C_SN]
+	mov qword ptr [r8], 1               # state 1, no links, unmarked, precedence 0
+	mov qword ptr [r8+8], 0
+	mov qword ptr [r8+16], 0
+	cmp dword ptr [r15+C_HCAP], 0
+	jne 3f
+	lea rdi, [r15+C_HEADS]
+	mov esi, 8
+	mov ecx, 8
+	call p_grow
+3:	mov rax, qword ptr [r15+C_HEADS]
+	mov qword ptr [rax], 0
+	mov dword ptr [r15+C_NH], 1
 
-.Lmain_outer:
-.ifdef DEBUG
-	mov rdi, r15
-	call tsasm_dbg@PLT
-.endif
-	cmp dword ptr [r15+C_NV], 0
+.Lmain_outer:                           # the version loop of ts_parser_parse
+	cmp dword ptr [r15+C_NH], 0
 	je .Lmain_end
-	xor ebx, ebx                        # vi
+	xor ebx, ebx                        # version
 .Lmain_vloop:
-	cmp ebx, dword ptr [r15+C_NV]
+	cmp ebx, dword ptr [r15+C_NH]
 	jae .Lmain_condense
-	mov eax, ebx
-	shl eax, 5
-	lea r12, [r15 + C_VERS + rax]
 .Lmain_adv:
-	cmp dword ptr [r12+V_STATUS], 0
+	mov rax, qword ptr [r15+C_HEADS]
+	cmp dword ptr [rax + rbx*8 + H_DEAD], 0
 	jne .Lmain_vnext
 	mov edi, ebx
 	call p_advance
-	cmp dword ptr [r12+V_STATUS], 0
+	mov rax, qword ptr [r15+C_HEADS]
+	cmp dword ptr [rax + rbx*8 + H_DEAD], 0
 	jne .Lmain_vnext
-	VPOS r12, rax, eax, rdx
+	mov eax, dword ptr [rax + rbx*8 + H_NODE]
+	lea rax, [rax+rax*2]
+	mov rdx, qword ptr [r15+C_SN]
+	mov eax, dword ptr [rdx + rax*8 + SN_POS]
 	mov ecx, dword ptr [r15+C_LASTPOS]
 	cmp eax, ecx
 	ja .Lmain_newpos
@@ -1531,114 +2375,64 @@ tsasm_parse:
 	jz .Lmain_adv
 .Lmain_newpos:
 	mov dword ptr [r15+C_LASTPOS], eax
-	cmp dword ptr [r15+C_NV], 1         # single version: keep going without condensing
+	cmp dword ptr [r15+C_NH], 1         # one version: condensing would change nothing
 	je .Lmain_adv
 .Lmain_vnext:
 	inc ebx
 	jmp .Lmain_vloop
 
-.Lmain_condense:
+.Lmain_condense:                        # ts_parser__condense_stack without error costs
 	xor ebx, ebx                        # i
 .Lcd_i:
-	cmp ebx, dword ptr [r15+C_NV]
+	cmp ebx, dword ptr [r15+C_NH]
 	jae .Lcd_cap
-	sub qword ptr [r15+C_STEPS], 1      # a unit per version condensed: the pair loop is
-	jb p_limit                          # at most MAXVERS / 2 compares per unit
-	mov eax, ebx
-	shl eax, 5
-	lea r12, [r15 + C_VERS + rax]
-	cmp dword ptr [r12+V_STATUS], 0
-	je .Lcd_live
+	sub qword ptr [r15+C_STEPS], 1
+	jb p_limit
+	mov rax, qword ptr [r15+C_HEADS]
+	cmp dword ptr [rax + rbx*8 + H_DEAD], 0
+	je 1f
 	mov edi, ebx
 	call p_remove_version
 	jmp .Lcd_i
-.Lcd_live:
-	xor ebp, ebp                        # j
+1:	xor ebp, ebp                        # j
 .Lcd_j:
 	cmp ebp, ebx
 	jae .Lcd_inext
-	mov eax, ebp
-	shl eax, 5
-	lea r13, [r15 + C_VERS + rax]       # X = j
-	# same state?
-	mov ecx, dword ptr [r12+V_SIZE]
-	mov rdx, qword ptr [r12+V_E]
-	movzx ecx, word ptr [rdx + rcx*8 - 4]
-	mov esi, dword ptr [r13+V_SIZE]
-	mov rdx, qword ptr [r13+V_E]
-	movzx esi, word ptr [rdx + rsi*8 - 4]
-	cmp ecx, esi
-	jne .Lcd_dyn
-	VPOS r12, rax, eax, rdx
-	VPOS r13, rcx, ecx, rdx
-	cmp eax, ecx
-	jne .Lcd_dyn
 	mov edi, ebp
 	mov esi, ebx
-	call p_try_converge
+	call p_merge
 	test eax, eax
-	jz .Lcd_group
-	mov edi, ebx
-	call p_remove_version
-	jmp .Lcd_i                          # i now refers to the next version
-.Lcd_dyn:
-	mov eax, dword ptr [r12+V_DYN]
-	cmp eax, dword ptr [r13+V_DYN]
-	jle .Lcd_jnext
-	mov edi, ebp
-	mov esi, ebx
-	call p_swap_versions
-	jmp .Lcd_jnext
-.Lcd_group:                             # C merges the heads anyway: X and Y form one group
-	mov eax, dword ptr [r13+V_GID]      # only versions that were one head, or none, can join:
-	cmp eax, dword ptr [r12+V_GID]      # C's links of separate heads cross in ways that lone
-	jne .Lcd_jnext                      # versions do not represent
-	mov eax, dword ptr [r13+V_NGID]
-	test eax, eax
-	jnz 1f
-	add dword ptr [r15+C_NEXTGID], 2    # fresh ids are even, fork ids (p_advance) odd
-	mov eax, dword ptr [r15+C_NEXTGID]
-	mov dword ptr [r13+V_NGID], eax
-1:	mov dword ptr [r12+V_NGID], eax
-	or dword ptr [r15+C_GLIVE], 1
+	jnz .Lcd_i                          # i now holds the next version
+	mov rax, qword ptr [r15+C_HEADS]    # the higher dynamic precedence moves first
+	mov rdx, qword ptr [r15+C_SN]
+	mov ecx, dword ptr [rax + rbp*8 + H_NODE]
+	lea rcx, [rcx+rcx*2]
+	mov ecx, dword ptr [rdx + rcx*8 + SN_DYN]
+	mov esi, dword ptr [rax + rbx*8 + H_NODE]
+	lea rsi, [rsi+rsi*2]
+	cmp ecx, dword ptr [rdx + rsi*8 + SN_DYN]
+	jge .Lcd_jnext
+	mov rcx, qword ptr [rax + rbx*8]
+	mov rdx, qword ptr [rax + rbp*8]
+	mov qword ptr [rax + rbx*8], rdx
+	mov qword ptr [rax + rbp*8], rcx
 .Lcd_jnext:
 	inc ebp
 	jmp .Lcd_j
 .Lcd_inext:
 	inc ebx
 	jmp .Lcd_i
-.Lcd_cap:                               # groups not re-formed this condense have split
-	mov eax, dword ptr [r15+C_GLIVE]
-	test eax, eax                       # no group now or before: every id is already 0
-	jz .Lcd_capcheck
-	add eax, eax
-	and eax, 2
-	mov dword ptr [r15+C_GLIVE], eax
-	mov ecx, dword ptr [r15+C_NV]
-	lea r8, [r15 + C_VERS]
-	jmp 2f
-1:	mov eax, dword ptr [r8+V_NGID]
-	mov dword ptr [r8+V_GID], eax
-	mov dword ptr [r8+V_NGID], 0
-	add r8, 32
-	dec ecx
-2:	test ecx, ecx
-	jnz 1b
-.Lcd_capcheck:
-	cmp dword ptr [r15+C_NV], MAXV
+.Lcd_cap:
+	cmp dword ptr [r15+C_NH], MAXVERSIONS
 	jbe .Lmain_outer
-	mov dword ptr [r15+C_CAPHIT], 1
-	mov edi, MAXV
+	mov edi, MAXVERSIONS
 	call p_remove_version
-	jmp .Lcd_capcheck
+	jmp .Lcd_cap
 
 .Lmain_end:
 	cmp dword ptr [r15+C_FINISHED], 0
 	jge 1f
 	mov rax, ERR_SYNTAX
-	cmp dword ptr [r15+C_CAPHIT], 0     # a version was dropped at the cap: not a proven error
-	je .Lmain_ret
-	mov rax, ERR_LIMIT
 	jmp .Lmain_ret
 1:	call p_emit
 .Lmain_ret:
@@ -1732,6 +2526,53 @@ tsasm_language_symbol_count:
 	ret
 	.size tsasm_language_symbol_count, .-tsasm_language_symbol_count
 
+.ifdef PROTO
+# Dev-only entry points for test/proto.c (assembled with --defsym PROTO=1, never in libtsasm.a).
+# tsasm_proto_begin(p, lang, src, len)
+	.globl tsasm_proto_begin
+tsasm_proto_begin:
+	.irp off, 0, 16, 32, 48, 64, 80, 96, 112
+	movdqu xmm0, xmmword ptr [rsi + \off]
+	movdqu xmmword ptr [rdi + C_LANG + \off], xmm0
+	.endr
+	mov qword ptr [rdi+C_SRC], rdx
+	add rdx, rcx
+	mov qword ptr [rdi+C_END], rdx
+	mov dword ptr [rdi+C_TOKVALID], 0
+	ret
+# tsasm_proto_token(p, state, pos) -> eax 1: token in the cache (reused or lexed), 0: none
+	.globl tsasm_proto_token
+tsasm_proto_token:
+	push rbx
+	push r12
+	push r13
+	push r14
+	push r15
+	mov r15, rdi
+	mov r12d, esi
+	mov r13d, edx
+	cmp dword ptr [r15+C_TOKVALID], 0
+	je 1f
+	cmp r13d, dword ptr [r15+C_TPOS]
+	jne 1f
+	mov edi, r12d
+	call p_can_reuse
+	test eax, eax
+	jnz 2f
+1:	mov edi, r12d
+	mov esi, r13d
+	call p_lex
+	jmp 3f
+2:	mov eax, 1
+3:	pop r15
+	pop r14
+	pop r13
+	pop r12
+	pop rbx
+	ret
+.endif
+
 	.section .rodata
 .Lempty: .asciz ""
 	.section .note.GNU-stack,"",@progbits
+

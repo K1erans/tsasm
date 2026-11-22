@@ -1,5 +1,1 @@
-MISMATCH /home/kieran/go/pkg/mod/modernc.org/cc/v4@v4.29.7/testdata/jhjourdan/expressions.c ref=290 impl=290
-  at 278: ref subscript_expression(298) n1 [522,536] p273 | impl sizeof_expression(294) n1 [522,536] p273
-MISMATCH /usr/include/valgrind/pub_tool_libcbase.h ref=2285 impl=2287
-  at 1215: ref cast_expression(292) n1 [7562,7585] p1204 | impl call_expression(299) n1 [7562,7585] p1204
-lang=c files=8732 match=3554 mismatch=2 impl_only_err=0 ref_only_err=0 both_err=5176 impl_limit=0
+lang=c files=8732 match=3556 mismatch=0 impl_only_err=0 ref_only_err=0 both_err=5176 impl_limit=0

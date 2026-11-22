@@ -2,6 +2,11 @@
 // usage: check_all <lang> <filelist> [verbose]
 #define _GNU_SOURCE
 #include "langs.h"
+#ifdef PROTO
+int64_t proto_parse(const TsasmLanguage *, const uint8_t *, uint64_t, const TsasmNode **);
+extern uint32_t proto_stat_maxheads, proto_stat_maxiters, proto_stat_maxlinks, proto_stat_maxslices;
+#define tsasm_parse(p, l, s, n, o) proto_parse(l, s, n, o)
+#endif
 int main(int argc, char **argv) {
   if (argc < 3) { fprintf(stderr, "usage: check_all <lang> <filelist> [verbose]\n"); return 2; }
   const TestLang *L = test_lang(argv[1]);
@@ -47,6 +52,9 @@ int main(int argc, char **argv) {
   }
   printf("lang=%s files=%d match=%d mismatch=%d impl_only_err=%d ref_only_err=%d both_err=%d impl_limit=%d\n",
          L->name, files, match, mismatch, impl_only_err, ref_only_err, both_err, impl_limit);
+#ifdef PROTO
+  printf("proto max heads=%u iters=%u links=%u slices=%u\n", proto_stat_maxheads, proto_stat_maxiters, proto_stat_maxlinks, proto_stat_maxslices);
+#endif
   tsasm_parser_free(p);
   return 0;
 }
