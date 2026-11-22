@@ -1,0 +1,24 @@
+# Shared leaves (branch leafshare) vs main 99bce0e (16-byte leaves): test/mtspeed go corpus/go126.txt asm <w> 5, interleaved, memory capped, 1 worker on CPU 4. 2026-11-22T15:24Z
+1w l16 median=1.414
+1w share median=1.376
+1w l16 median=1.374
+1w share median=1.429
+1w l16 median=1.363
+1w share median=1.367
+1w l16 median=1.425
+1w share median=1.403
+1w l16 median=1.377
+1w share median=1.336
+1w l16 median=1.407
+1w share median=1.347
+20w l16 median=0.123 maxrss_kb=535260 
+20w share median=0.120 maxrss_kb=503364 
+20w l16 median=0.119 maxrss_kb=567256 
+20w share median=0.119 maxrss_kb=545540 
+20w l16 median=0.117 maxrss_kb=568100 
+20w share median=0.117 maxrss_kb=524372 
+20w l16 median=0.122 maxrss_kb=544112 
+20w share median=0.115 maxrss_kb=540536 
+
+# test/memprof bytes of buffers per input byte (used): Go 40 largest 22.29 -> 21.29, GOROOT 19.50 -> 18.73, Java 12.82 -> 12.52, C 6.69 -> 6.63, JSON 10.36 -> 10.36
+# Before (24-byte build, build/var/deadstat): leaves duplicating the leaf before them = dead leaves almost exactly (Go 40 largest 673,488 duplicates, 674,440 dead leaves of 3,080,250; Java 562,371 / 575,665 of 4,838,758)

@@ -160,7 +160,9 @@ buffers per input byte instead of 30.1, one thread is 0.4% faster and 20 threads
 (`results/ab_tree24.txt`). A shifted token's leaf then dropped to 16 bytes (it has no children, so no
 child index or precedence; reads of a childless tree's precedence give 0): 22.3 bytes per input
 byte for big Go files, Java -9%, JSON -11%, speed unchanged or slightly faster
-(`results/ab_leaf16.txt`).
+(`results/ab_leaf16.txt`). Versions that shift the same token now share its leaf, as C pushes one
+lookahead subtree onto each; before, nearly every dead leaf was such a duplicate. Big Go files 21.3
+bytes per input byte, Java -2%, speed unchanged (`results/ab_leafshare.txt`).
 
 **What limits scaling.** Measured with `scripts/scaling_pinned.sh` on the commit before the
 retention change, with the clock of the busy CPUs sampled during each run (`results/scaling.txt`):

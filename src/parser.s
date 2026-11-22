@@ -76,6 +76,9 @@
 	.set C_NSLK, 408
 	.set C_SLKCAP, 412
 	.set C_RETAIN, 416                  # u64 bytes of buffers kept between parses
+	.set C_LEAF, 424                    # the last leaf shifted (0: none), shared by every version that
+	.set C_LEAFKEY, 428                 # shifts the same token: its symbol | extra << 24
+	.set C_LEAFSE, 432                  # and its start, end
 	.set C_ITERS, 448                   # pop iterators: u32 stack node, u32 count, u32 cell, pad
 	.set MAXITERS, 64                   # C's MAX_ITERATOR_COUNT
 	.set C_SIZE, C_ITERS + MAXITERS * 16
@@ -787,17 +790,29 @@ p_push:
 	jnz .Lsl_a\@
 	mov ecx, 1                          # eof is always extra
 .Lsl_a\@:
+	shl ecx, 24
+	or ecx, edx                         # symbol | extra<<24 (prod = 0)
+	mov r10, qword ptr [r15+C_TSTART]   # start, end
+	mov eax, dword ptr [r15+C_LEAF]     # versions shifting the same token share its leaf,
+	test eax, eax                       # as C pushes one lookahead subtree onto each
+	jz .Lsl_new\@
+	cmp ecx, dword ptr [r15+C_LEAFKEY]
+	jne .Lsl_new\@
+	cmp r10, qword ptr [r15+C_LEAFSE]
+	je .Lsl_have\@
+.Lsl_new\@:
 	ALLOC_TREE eax, LEAF_UNITS
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9d, eax
 	TREE_OFF r9
 	add r9, r8
-	shl ecx, 24
-	or ecx, edx                         # symbol | extra<<24 (prod = 0)
 	mov dword ptr [r9+N_SYM], ecx
-	mov r10, qword ptr [r15+C_TSTART]   # start, end
 	mov qword ptr [r9+N_START], r10
 	mov dword ptr [r9+N_CC], 0
+	mov dword ptr [r15+C_LEAF], eax
+	mov dword ptr [r15+C_LEAFKEY], ecx
+	mov qword ptr [r15+C_LEAFSE], r10
+.Lsl_have\@:
 	mov edi, edi
 	mov r11d, eax                       # the leaf
 	mov eax, dword ptr [r15+C_SFREE]
@@ -2981,6 +2996,7 @@ tsasm_parse:
 	xor eax, eax
 	mov dword ptr [r15+C_NN], eax
 	mov dword ptr [r15+C_NK], eax
+	mov dword ptr [r15+C_LEAF], eax
 	mov dword ptr [r15+C_TOKVALID], eax
 	mov dword ptr [r15+C_LASTPOS], eax
 	mov dword ptr [r15+C_SFREE], eax
