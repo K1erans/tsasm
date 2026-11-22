@@ -58,6 +58,7 @@ tools: libtsasm.a $(REFLIB)
 	gcc $(TOOLFLAGS) -o test/fuzz test/fuzz.c libtsasm.a $(REFLIB)
 	gcc $(TOOLFLAGS) -o test/one test/one.c libtsasm.a $(REFLIB)
 	gcc $(TOOLFLAGS) -o test/mtspeed test/mtspeed.c libtsasm.a $(REFLIB)
+	gcc $(TOOLFLAGS) -I. -o test/memprof test/memprof.c libtsasm.a $(REFLIB)
 
 # Go parity vs C tree-sitter over GOROOT/src (memory capped at 4 GB)
 check: tools

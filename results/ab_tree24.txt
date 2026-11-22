@@ -1,0 +1,38 @@
+# 24-byte tree nodes (branch wset) vs main 1b326de: test/mtspeed go corpus/go126.txt asm <w> 5, interleaved, memory capped, 1 worker on CPU 4, maxrss with the corpus. 2026-11-22T14:52Z
+1w main median=1.299
+1w n24 median=1.293
+1w main median=1.304
+1w n24 median=1.298
+1w main median=1.299
+1w n24 median=1.295
+1w main median=1.305
+1w n24 median=1.302
+1w main median=1.298
+1w n24 median=1.296
+1w main median=1.295
+1w n24 median=1.290
+20w main median=0.123 maxrss_kb=595032 
+20w n24 median=0.115 maxrss_kb=534892 
+20w main median=0.121 maxrss_kb=591732 
+20w n24 median=0.116 maxrss_kb=548924 
+20w main median=0.121 maxrss_kb=593984 
+20w n24 median=0.115 maxrss_kb=529040 
+20w main median=0.123 maxrss_kb=592308 
+20w n24 median=0.115 maxrss_kb=526360 
+
+# test/memprof go (40 largest GOROOT files), bytes of buffers per input byte (used): before trees 21.93 kids 2.74 out 5.35 total 30.06; after:
+40 files, 10.8 MB, 0.334 visible nodes per byte
+buffer    used B/byte   cap B/byte
+trees           16.45        23.09
+kids             2.74         3.92
+out              5.35         8.28
+estk             0.00         0.10
+stack            0.03         0.03
+ext              0.01         0.05
+heads            0.00         0.01
+slices           0.00         0.02
+cells            0.00         0.01
+slk              0.00         0.01
+total           24.58        35.52
+most memory: 37.8 MB of buffers for 0.82 MB, /usr/lib/go-1.22/src/cmd/compile/internal/ssa/rewritegeneric.go
+trees: 0.685 per byte in the arena, 0.545 reachable from the root (79.5%), 0.223 of them leaves; reachable kids 0.545 per byte

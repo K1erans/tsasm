@@ -15,7 +15,7 @@
 # registers except flags, so hot paths can call them without spilling.
 #
 # Data model:
-#   Tree node (32 bytes): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
+#   Tree node (24 bytes): u16 symbol, u8 production_id, u8 extra, u32 start, u32 end,
 #                         u32 child_count, u32 child_index (into kids[]), i32 dynamic_precedence
 #   Stack node (24 bytes): C tree-sitter's graph-structured stack node: u16 state, u8 link count,
 #                         u8 mark, i32 dynamic_precedence, link 0 (u32 node, u32 tree), u32 position,
@@ -144,6 +144,7 @@
 	.set N_CC, 12
 	.set N_CI, 16
 	.set N_DYN, 20
+	.set N_SIZE, 24
 
 	.text
 
@@ -278,7 +279,7 @@ p_grow_nodes:
 	jb 1f
 	inc esi
 	lea rdi, [r15+C_NODES]
-	mov ecx, 32
+	mov ecx, N_SIZE
 	call p_grow
 1:	call p_set_navail
 	pop rcx
@@ -351,7 +352,7 @@ p_free_buf:
 # p_release_work: free every buffer but the output array; usage drops to the output's (r15 = ctx).
 p_release_work:
 	push rbx
-	RELEASE C_NODES, 32
+	RELEASE C_NODES, N_SIZE
 	RELEASE C_KIDS, 4
 	RELEASE C_ESTK, 16
 	RELEASE C_SN, SN_SIZE
@@ -374,6 +375,12 @@ p_release:
 	mov qword ptr [r15+C_MEMUSED], 0
 	pop rbx
 	ret
+
+# TREE_OFF reg64: tree index -> byte offset in the arena (index * N_SIZE)
+.macro TREE_OFF reg
+	lea \reg, [\reg + \reg*2]
+	shl \reg, 3
+.endm
 
 # ALLOC_NODE reg32: reg = new node index (nn++), may grow (preserves regs)
 .macro ALLOC_NODE reg
@@ -737,7 +744,7 @@ p_push:
 	mov dword ptr [r8+SN_EXT], 0
 	mov r10, qword ptr [r15+C_NODES]
 	mov r11d, esi
-	shl r11, 5
+	TREE_OFF r11
 	mov edx, dword ptr [r10 + r11 + N_END]
 	mov dword ptr [r8+SN_POS], edx
 	mov edx, dword ptr [r10 + r11 + N_DYN]
@@ -759,7 +766,7 @@ p_push:
 	ALLOC_NODE eax
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9d, eax
-	shl r9, 5
+	TREE_OFF r9
 	add r9, r8
 	shl ecx, 24
 	or ecx, edx                         # symbol | extra<<24 (prod = 0)
@@ -871,7 +878,7 @@ p_reduce_fast:
 	mov eax, dword ptr [r10+SN_L0T]
 	mov ecx, dword ptr [r10+SN_L0]
 	inc r13d
-	shl rax, 5
+	TREE_OFF rax
 	cmp byte ptr [r9 + rax + N_EXTRA], 0
 	jne 1f
 	inc edx
@@ -934,7 +941,7 @@ p_reduce_fast:
 	jmp .Lrf_take
 3:	dec esi
 	mov dword ptr [r10 + rsi*4], ebx
-	shl rbx, 5
+	TREE_OFF rbx
 	add edi, dword ptr [r9 + rbx + N_DYN]
 	inc edx
 	jmp .Lrf_take
@@ -955,7 +962,7 @@ p_reduce_fast:
 2:	mov ecx, dword ptr [rsp+RF_KIDS]
 	mov eax, dword ptr [rsp+RF_PARENT]
 	mov rdx, rax
-	shl rdx, 5
+	TREE_OFF rdx
 	add rdx, r9
 	mov r11, r12
 	shr r11, 16
@@ -975,13 +982,13 @@ p_reduce_fast:
 	add edi, r11d                       # the action's dynamic precedence
 	mov dword ptr [rdx+N_DYN], edi
 	mov r11d, dword ptr [r10 + rsi*4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_START]
 	mov dword ptr [rdx+N_START], r11d
 	add esi, ecx
 	mov dword ptr [r15+C_NK], esi
 	mov r11d, dword ptr [r10 + rsi*4 - 4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_END]
 	mov dword ptr [rdx+N_END], r11d
 	jmp 5f
@@ -1061,7 +1068,7 @@ p_reduce_fast:
 	mov r14d, ecx                       # the lowest popped node
 	mov ecx, dword ptr [r11+SN_L0]
 	mov r12, rax
-	shl r12, 5
+	TREE_OFF r12
 	cmp byte ptr [r9 + r12 + N_EXTRA], 0
 	jne .Lrf_general
 	dec esi
@@ -1072,7 +1079,7 @@ p_reduce_fast:
 	ALLOC_NODE eax                      # parent; ecx = base node
 	mov r9, qword ptr [r15+C_NODES]
 	mov rdx, rax
-	shl rdx, 5
+	TREE_OFF rdx
 	add rdx, r9
 	mov r12, qword ptr [rsp+RF_ACTION]
 	mov r11, r12
@@ -1089,13 +1096,13 @@ p_reduce_fast:
 	add edi, r12d                       # the action's dynamic precedence
 	mov dword ptr [rdx+N_DYN], edi
 	mov r11d, dword ptr [r10 + rsi*4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_START]
 	mov dword ptr [rdx+N_START], r11d
 	add esi, ebp
 	mov dword ptr [r15+C_NK], esi
 	mov r11d, dword ptr [r10 + rsi*4 - 4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_END]
 	mov dword ptr [rdx+N_END], r11d
 	lea r11, [rcx+rcx*2]
@@ -1157,7 +1164,7 @@ p_reduce_fast:
 	call p_link_addr
 	mov ecx, dword ptr [rax]
 	mov eax, dword ptr [rax+4]
-	shl rax, 5
+	TREE_OFF rax
 	cmp byte ptr [r9 + rax + N_EXTRA], 0
 	jne .Lrf_general
 	mov edx, ebp
@@ -1170,7 +1177,7 @@ p_reduce_fast:
 	jne .Lrf_general
 	mov eax, dword ptr [r11+SN_L0T]
 	mov ecx, dword ptr [r11+SN_L0]
-	shl rax, 5
+	TREE_OFF rax
 	cmp byte ptr [r9 + rax + N_EXTRA], 0
 	jne .Lrf_general
 	jmp 2b
@@ -1216,14 +1223,14 @@ p_reduce_fast:
 	mov ecx, dword ptr [r11+SN_L0]
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
-	shl rax, 5
+	TREE_OFF rax
 	add edi, dword ptr [r9 + rax + N_DYN]
 	dec edx
 	jmp 1b
 4:	mov ecx, r12d                       # this slice's link
 	dec esi
 	mov dword ptr [r10 + rsi*4], r13d
-	shl r13, 5
+	TREE_OFF r13
 	add edi, dword ptr [r9 + r13 + N_DYN]
 	mov edx, ebp
 	sub edx, dword ptr [rsp+RF_D]
@@ -1235,12 +1242,12 @@ p_reduce_fast:
 	mov ecx, dword ptr [r11+SN_L0]
 	dec esi
 	mov dword ptr [r10 + rsi*4], eax
-	shl rax, 5
+	TREE_OFF rax
 	add edi, dword ptr [r9 + rax + N_DYN]
 	jmp 2b
 3:	mov eax, dword ptr [rsp+RF_PARENT]  # ecx = the slice's base node
 	mov rdx, rax
-	shl rdx, 5
+	TREE_OFF rdx
 	add rdx, r9
 	mov r12, qword ptr [rsp+RF_ACTION]
 	mov r11, r12
@@ -1257,13 +1264,13 @@ p_reduce_fast:
 	add edi, r12d                       # the action's dynamic precedence
 	mov dword ptr [rdx+N_DYN], edi
 	mov r11d, dword ptr [r10 + rsi*4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_START]
 	mov dword ptr [rdx+N_START], r11d
 	add esi, ebp
 	mov dword ptr [r15+C_NK], esi
 	mov r11d, dword ptr [r10 + rsi*4 - 4]
-	shl r11, 5
+	TREE_OFF r11
 	mov r11d, dword ptr [r9 + r11 + N_END]
 	mov dword ptr [rdx+N_END], r11d
 	lea r11, [rcx+rcx*2]
@@ -1476,7 +1483,7 @@ p_pop:
 	inc esi
 	mov dword ptr [r15+C_NCELL], esi
 	mov rdi, qword ptr [r15+C_NODES]
-	shl r11, 5
+	TREE_OFF r11
 	cmp byte ptr [rdi + r11 + N_EXTRA], 0
 	jne 2f
 	inc dword ptr [r9+IT_COUNT]
@@ -1624,9 +1631,9 @@ p_link_equiv:
 	je 9f
 	xor eax, eax
 	mov r8, qword ptr [r15+C_NODES]
-	shl rsi, 5
+	TREE_OFF rsi
 	add rsi, r8
-	shl rcx, 5
+	TREE_OFF rcx
 	add rcx, r8
 	mov r9d, dword ptr [rsi+N_SYM]
 	mov r10d, dword ptr [rcx+N_SYM]
@@ -1687,10 +1694,10 @@ p_subtree_compare:
 	sub qword ptr [r15+C_STEPS], 1
 	jb p_limit
 	mov eax, r12d
-	shl rax, 5
+	TREE_OFF rax
 	lea r10, [r8 + rax]
 	mov eax, r13d
-	shl rax, 5
+	TREE_OFF rax
 	lea r11, [r8 + rax]
 	movzx eax, word ptr [r10+N_SYM]
 	movzx ecx, word ptr [r11+N_SYM]
@@ -1785,9 +1792,9 @@ p_add_link:
 	call p_link_addr
 	mov r8, qword ptr [r15+C_NODES]
 	mov ecx, dword ptr [rax+4]
-	shl rcx, 5
+	TREE_OFF rcx
 	mov edx, r14d
-	shl rdx, 5
+	TREE_OFF rdx
 	mov ecx, dword ptr [r8 + rcx + N_DYN]
 	mov edx, dword ptr [r8 + rdx + N_DYN]
 	cmp edx, ecx
@@ -1870,7 +1877,7 @@ p_add_link:
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9, qword ptr [r15+C_SN]
 	mov eax, r14d
-	shl rax, 5
+	TREE_OFF rax
 	mov edx, dword ptr [r8 + rax + N_DYN]
 	mov eax, r13d
 	lea rax, [rax+rax*2]
@@ -1968,7 +1975,7 @@ p_strip:
 	jz 2f
 	lea edx, [rdi + rax - 1]
 	mov edx, dword ptr [rcx + rdx*4]
-	shl rdx, 5
+	TREE_OFF rdx
 	cmp byte ptr [r8 + rdx + N_EXTRA], 0
 	je 2f
 	dec eax
@@ -1993,7 +2000,7 @@ p_build:
 1:	ALLOC_NODE eax
 	mov r8, qword ptr [r15+C_NODES]
 	mov r9d, eax
-	shl r9, 5
+	TREE_OFF r9
 	add r9, r8
 	mov rcx, r12
 	shr rcx, 16
@@ -2013,7 +2020,7 @@ p_build:
 	jz 3f
 2:	mov r12d, dword ptr [rcx + rdi*4]
 	mov dword ptr [r10 + r11*4], r12d
-	shl r12, 5
+	TREE_OFF r12
 	add edx, dword ptr [r8 + r12 + N_DYN]
 	inc edi
 	inc r11d
@@ -2023,11 +2030,11 @@ p_build:
 	mov dword ptr [r15+C_NK], r11d
 	mov ecx, dword ptr [r9+N_CI]
 	mov ecx, dword ptr [r10 + rcx*4]
-	shl rcx, 5
+	TREE_OFF rcx
 	mov ecx, dword ptr [r8 + rcx + N_START]
 	mov dword ptr [r9+N_START], ecx
 	mov ecx, dword ptr [r10 + r11*4 - 4]
-	shl rcx, 5
+	TREE_OFF rcx
 	mov ecx, dword ptr [r8 + rcx + N_END]
 	mov dword ptr [r9+N_END], ecx
 	jmp 4f
@@ -2057,12 +2064,12 @@ p_select:
 	jae 2f
 	lea edx, [r13 + rbx]
 	mov edx, dword ptr [rcx + rdx*4]
-	shl rdx, 5
+	TREE_OFF rdx
 	add eax, dword ptr [r8 + rdx + N_DYN]
 	inc ebx
 	jmp 1b
 2:	mov edx, r12d
-	shl rdx, 5
+	TREE_OFF rdx
 	add rdx, r8
 	cmp eax, dword ptr [rdx+N_DYN]
 	jg .Lse_right
@@ -2213,7 +2220,7 @@ p_reduce_gss:
 .Lrg_push:
 	mov rax, qword ptr [r15+C_NODES]
 	mov ecx, r14d
-	shl rcx, 5
+	TREE_OFF rcx
 	cmp dword ptr [rax + rcx + N_CC], 0
 	je 3f
 	mov rdx, r13
@@ -2313,7 +2320,7 @@ p_accept:
 	lea eax, [r13 + rbp]
 	mov eax, dword ptr [rcx + rax*4]
 	mov rdx, rax
-	shl rdx, 5
+	TREE_OFF rdx
 	cmp byte ptr [r8 + rdx + N_EXTRA], 0
 	jne 1b
 	push rax                            # the old root
@@ -2342,7 +2349,7 @@ p_accept:
 	inc esi
 	jmp 3b
 4:	mov rdi, rdx
-	shl rdi, 5
+	TREE_OFF rdi
 	mov esi, dword ptr [r8 + rdi + N_CI]
 	push rbx
 	mov ebx, dword ptr [r8 + rdi + N_CC]
@@ -2363,9 +2370,9 @@ p_accept:
 	inc esi
 	jmp 7b
 8:	mov rdi, rax
-	shl rdi, 5
+	TREE_OFF rdi
 	add rdi, r8                         # new root
-	shl rdx, 5
+	TREE_OFF rdx
 	mov esi, dword ptr [r8 + rdx + N_SYM]
 	and esi, 0xFFFFFF                   # symbol and production id, not extra
 	mov dword ptr [rdi+N_SYM], esi
@@ -2376,11 +2383,11 @@ p_accept:
 	mov dword ptr [rdi+N_CC], edx
 	mov dword ptr [rdi+N_DYN], r9d
 	mov edx, dword ptr [r10 + rsi*4]
-	shl rdx, 5
+	TREE_OFF rdx
 	mov edx, dword ptr [r8 + rdx + N_START]
 	mov dword ptr [rdi+N_START], edx
 	mov edx, dword ptr [r10 + r11*4 - 4]
-	shl rdx, 5
+	TREE_OFF rdx
 	mov edx, dword ptr [r8 + rdx + N_END]
 	mov dword ptr [rdi+N_END], edx
 	mov dword ptr [r15+C_NK], r11d
@@ -2388,7 +2395,7 @@ p_accept:
 	test ecx, ecx
 	js .Lac_take
 	mov rdx, rcx
-	shl rdx, 5
+	TREE_OFF rdx
 	cmp r9d, dword ptr [r8 + rdx + N_DYN]
 	jg .Lac_take
 	jl .Lac_next
@@ -2423,7 +2430,7 @@ p_accept:
 .Lac_put:
 	mov dword ptr [r10 + r11*4], edi
 	inc r11d
-	shl rdi, 5
+	TREE_OFF rdi
 	add r9d, dword ptr [r8 + rdi + N_DYN]
 	ret
 
@@ -2562,7 +2569,7 @@ p_accept:
 	mov r13d, ecx                       # the lowest popped node
 	mov ecx, dword ptr [r8 + r11*8 + SN_L0]
 	mov r11, rax
-	shl r11, 5
+	TREE_OFF r11
 	cmp byte ptr [r9 + r11 + N_EXTRA], 0
 	jne .Lad_rslow0
 	dec esi
@@ -2582,18 +2589,18 @@ p_accept:
 	ALLOC_NODE eax                      # parent
 	mov r9, qword ptr [r15+C_NODES]
 	mov r11, rax
-	shl r11, 5
+	TREE_OFF r11
 	add r11, r9
 	mov dword ptr [r11+N_CC], ebp
 	mov dword ptr [r11+N_CI], esi
 	mov ebx, dword ptr [r10 + rsi*4]
-	shl rbx, 5
+	TREE_OFF rbx
 	mov ebx, dword ptr [r9 + rbx + N_START]
 	mov dword ptr [r11+N_START], ebx
 	add esi, ebp
 	mov dword ptr [r15+C_NK], esi
 	mov ebx, dword ptr [r10 + rsi*4 - 4]
-	shl rbx, 5
+	TREE_OFF rbx
 	mov ebx, dword ptr [r9 + rbx + N_END]
 	mov dword ptr [r11+N_END], ebx
 	mov rbx, r12
@@ -2771,7 +2778,7 @@ p_emit:
 	mov r12, qword ptr [r15+C_OUT]
 	mov ecx, dword ptr [r15+C_FINISHED]
 	mov eax, ecx
-	shl rax, 5
+	TREE_OFF rax
 	lea r9, [r8 + rax]
 	mov r13, qword ptr [r15+C_LANG+L_SYMBOL_OUT]
 	movzx eax, word ptr [r9+N_SYM]
@@ -2802,7 +2809,7 @@ p_emit:
 	shl eax, 4
 	lea rdi, [rbx + rax - 16]           # frame ptr
 	mov eax, dword ptr [rdi]
-	shl rax, 5
+	TREE_OFF rax
 	lea r9, [r8 + rax]                  # parent node
 	mov ecx, dword ptr [rdi+4]          # ci
 	cmp ecx, dword ptr [r9+N_CC]
@@ -2814,11 +2821,11 @@ p_emit:
 	cmp edx, dword ptr [r9+N_CC]        # start loading the next sibling
 	jae 1f
 	mov eax, dword ptr [r10 + rcx*4 + 4]
-	shl rax, 5
+	TREE_OFF rax
 	prefetcht0 [r8 + rax]
 1:
 	mov eax, esi
-	shl rax, 5
+	TREE_OFF rax
 	lea r11, [r8 + rax]                 # child node
 	xor edx, edx                        # alias
 	cmp byte ptr [r11+N_EXTRA], 0
@@ -2961,7 +2968,7 @@ tsasm_parse:
 	mov r8, qword ptr [r15+C_NODES]
 	pxor xmm0, xmm0
 	movdqu xmmword ptr [r8], xmm0
-	movdqu xmmword ptr [r8+16], xmm0
+	movq qword ptr [r8+16], xmm0
 	# stack node 0: the base (state 1, position 0, no links); one active version on it
 	cmp dword ptr [r15+C_SNCAP], 0
 	jne 2f

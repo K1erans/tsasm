@@ -12,4 +12,5 @@
 /test/speedasm
 /test/speedmodel
 /test/mtspeed
+/test/memprof
 /test/check_proto
