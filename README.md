@@ -127,13 +127,13 @@ P-core.
 
 | workers | C tree-sitter 0.25.0 | tsasm | tsasm / C |
 |---|---:|---:|---:|
-| 1 | 7.8 MB/s | 72.7 MB/s | 9.3× |
-| 6 | 45.9 MB/s | 401.7 MB/s | 8.8× |
-| 12 | 76.1 MB/s | 609.9 MB/s | 8.0× |
-| 20 | 93.0 MB/s | 751.4 MB/s | 8.1× |
+| 1 | 7.8 MB/s | 72.3 MB/s | 9.3× |
+| 6 | 47.9 MB/s | 402.7 MB/s | 8.4× |
+| 12 | 76.4 MB/s | 599.6 MB/s | 7.8× |
+| 20 | 93.0 MB/s | 752.1 MB/s | 8.1× |
 
 C's column is parse only. tsasm's includes emitting the flat node array; bench copies it into
-a Go slice on top. On this corpus tsasm accepts 7653 files and C 7654; parity is 99.48%.
+a Go slice on top. On this corpus tsasm and C both accept 7654 files; parity is 100% (7654 / 7654). gotreesitter v0.58.0 in the same harness (measured earlier, 00:15): 1.0, 2.6, 2.4 and 2.5 MB/s, parity 92.54%.
 
 Single-thread cost of the reentrant, multi-grammar, graph-structured-stack runtime against the
 original static Go-only build: about +3.1% (old 1.199–1.220 s, new 1.236–1.260 s per pass, 6
