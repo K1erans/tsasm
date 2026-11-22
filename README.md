@@ -123,10 +123,10 @@ P-core.
 
 | workers | C tree-sitter 0.25.0 | tsasm | tsasm / C |
 |---|---:|---:|---:|
-| 1 | 7.8 MB/s | 71.6 MB/s | 9.2× |
-| 6 | 47.9 MB/s | 402.3 MB/s | 8.4× |
-| 12 | 75.3 MB/s | 593.4 MB/s | 7.9× |
-| 20 | 93.1 MB/s | 749.4 MB/s | 8.0× |
+| 1 | 7.8 MB/s | 72.7 MB/s | 9.3× |
+| 6 | 45.9 MB/s | 401.7 MB/s | 8.8× |
+| 12 | 76.1 MB/s | 609.9 MB/s | 8.0× |
+| 20 | 93.0 MB/s | 751.4 MB/s | 8.1× |
 
 C's column is parse only. tsasm's includes emitting the flat node array; bench copies it into
 a Go slice on top. On this corpus tsasm accepts 7653 files and C 7654; parity is 99.48%.
@@ -151,7 +151,7 @@ retention change, with the clock of the busy CPUs sampled during each run (`resu
 So throughput follows core-GHz: SMT, E-cores and the power limit. The library has no locks and
 no shared writable data, and nothing in the measurements points to a memory-bandwidth wall. A
 software fix could recover at most the 6% gap to the model at 20 workers. C scales by a slightly
-larger factor (12× against 10.5× from 1 to 20 workers). Its clocks stay higher under load
+larger factor (11.9× against 10.3× from 1 to 20 workers). Its clocks stay higher under load
 (P-cores at 3.65 GHz against 3.19 GHz with 20 workers), which is measured. That its lower IPC
 draws less power is an inference.
 
@@ -183,7 +183,20 @@ replays them in both guard modes):
 - A token accepted before skipped whitespace had its start after its end. C resets the start
   to the end, and now tsasm does too.
 
-**Stress suite** (`make stress`, `test/stress.c`, capped at 8 GB). <!-- STRESS -->
+**Stress suite** (`make stress`, `test/stress.c`, capped at 8 GB): 126 of 126 checks pass on
+the final library in 127 s.
+
+- 124 pathological inputs: nesting to 10^7 levels, ambiguous parameter lists, generics,
+  unterminated strings and comments, NUL bytes, random bytes and token soup up to 10 MB, lengths
+  from 0xFFFFFFF0 to 2^64-1 over a `PROT_NONE` page (rejected without touching a byte), memory
+  limits from 0 to 4 GiB, and a 220 MB valid Go file. Each must give its expected class
+  (accept, syntax error, or limit), confirmed against C tree-sitter on a small instance, and the
+  parser must parse correctly afterwards.
+- Retention: after a parse holding 705 MiB, a small parse drops the parser to 0.04 MiB, and
+  freeing it returns to the 0.02 MiB baseline.
+- Threads: 20 threads for 60 s ran 2.81M parses (persistent parsers, a fresh parser per file,
+  random memory limits, and mutated inputs) checked against a single-threaded reference: 0
+  mismatches, 0 anomalies.
 
 **valgrind.** memcheck over a 1-in-20 sample of every corpus (385 Go, 436 C, 163 Java and
 126 JSON files): 0 errors, 0 bytes lost. helgrind and DRD with 4 threads over 100 Go and
@@ -261,8 +274,9 @@ changes.
   graph-structured stack, under its internal limits (`MAX_VERSION_COUNT` 6, `MAX_LINK_COUNT` 8,
   64 pop iterators), produces a degraded parse where the first name becomes a type-only
   `parameter_declaration`. tsasm keeps the correct single declaration. Matching C exactly needs
-  a faithful GSS port. Very long lists of this kind also copy linear stacks quadratically and can
-  hit the work budget.
+  a faithful GSS port. Long lists also copy linear stacks quadratically. A list of 400 or more
+  identical one-letter names (`f(a, a, …, a int)`) returns `TSASM_ERR_LIMIT` from the work
+  budget. 1,000 distinct names still parse (42 units per byte); real code peaks at 4.
 - **Java's 19 mismatches** are `identifier` versus `type_identifier` choices where C's merged
   stack heads create paths that no single linear version holds. They also need a GSS.
 - **The version cap.** One Go file needs more than 64 live versions and returns

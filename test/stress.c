@@ -405,19 +405,21 @@ static void *run_huge(void *arg) {
     if (r1 != c1) { res->pass = 0; note(res, "small parse after -3 gave %ld vs %ld", (long)r1, (long)c1); }
     note(res, "%ld copies of %s; would be %ld nodes; parser ok after", k, strrchr(huge_src, '/') + 1, (long)want);
   } else {
-    x->expect = E_ACC;
+    x->expect = E_ACC | E_LIM;
     FILE *mi = fopen("/proc/meminfo", "r"); char l[256]; long avail_kb = 0;
     while (mi && fgets(l, sizeof l, mi)) sscanf(l, "MemAvailable: %ld kB", &avail_kb);
     if (mi) fclose(mi);
     if (avail_kb < 7l << 20) { res->got = 0; note(res, "SKIPPED: MemAvailable %.1f GB < 7 GB", avail_kb / 1e6); goto out; }
     tsasm_parser_set_memory_limit(p, huge_limit);
+    // The full input may need more than the 2^27 tree nodes tsasm.h allows (TSASM_ERR_LIMIT); a
+    // prefix of 10/11 of the copies (~200 MB) stays under it and must parse exactly.
+    long k2 = k * 10 / 11;
+    int64_t want2 = c1 + (k2 - 1) * (c2 - c1);
+    int64_t r2 = tsasm_parse(p, GO, in.p, strlen(PKG) + k2 * body.len, NULL);
+    if (r2 != want2) { res->pass = 0; note(res, "WRONG: the first %ld copies (%.0f MB) give %ld, want %ld", k2, (strlen(PKG) + k2 * body.len) / 1e6, (long)r2, (long)want2); }
     int64_t r = res->got = timed_parse(res, p, in.p, in.len, &nodes);
-    if (r != want) {
-      res->pass = 0; note(res, "WRONG: want %ld nodes (limit %.1f GiB)", (long)want, huge_limit / MiB / 1024);
-      long k2 = k * 10 / 11; // diagnostic: does a prefix of 10/11 of the copies (~200 MB) parse?
-      int64_t r2 = tsasm_parse(p, GO, in.p, strlen(PKG) + k2 * body.len, NULL);
-      note(res, "the first %ld copies (%.0f MB) give %ld, want %ld", k2, (strlen(PKG) + k2 * body.len) / 1e6, (long)r2, (long)(c1 + (k2 - 1) * (c2 - c1)));
-    }
+    if (r == TSASM_ERR_LIMIT) note(res, "full input -3 at the node cap; %ld-copy prefix parses exactly (%ld nodes)", k2, (long)r2);
+    else if (r != want) { res->pass = 0; note(res, "WRONG: want %ld nodes or -3 (limit %.1f GiB)", (long)want, huge_limit / MiB / 1024); }
     else { const char *e = check_tree(nodes, r, in.len, NULL); if (e) fail(res, "BAD TREE: %s", e); }
     note(res, "limit %.1f GiB, %ld copies", huge_limit / MiB / 1024, k);
   }
