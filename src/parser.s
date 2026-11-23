@@ -2981,9 +2981,10 @@ tsasm_parse:
 	.endr
 	mov rsi, rdx
 	mov rdx, rcx
-	mov rax, qword ptr [r15+C_RETAIN]   # drop the last parse's big output array
-	cmp qword ptr [r15+C_MEMUSED], rax
-	jbe 1f
+	cmp dword ptr [r15+C_NCAP], 0       # drop the last parse's big output array
+	jne 1f
+	cmp dword ptr [r15+C_OUTCAP], 0
+	je 1f
 	push rsi
 	push rdx
 	call p_release

@@ -1,0 +1,7 @@
+# invariant	expected on the current code	note
+BaseNodeProtected	PASS	
+LiveNodesNeverFreed	PASS	
+NoExtensionBlockLeak	PASS	
+MarksClearedAfterGC	PASS	
+NoSelfLoopLinks	PASS	
+CondenseCleanHeads	PASS	

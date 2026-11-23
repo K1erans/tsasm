@@ -1,0 +1,8 @@
+# invariant	expected on the current code	note
+AccountingExact	PASS	
+MemoryWithinLimit	PASS	
+AllocatorKindConsistent	PASS	
+NodeBudgetEnforced	PASS	
+ResultPointerValid	PASS	
+RetainCapRespectedOnIdle	PASS	
+BigParseOutputDropped	PASS	

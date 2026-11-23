@@ -156,11 +156,12 @@ Across five fuzzing campaigns (45 job-hours, **17.9 million executions** across 
 | 4 | Final pre-GSS library | 150 min | 9,589,679 | 0 |
 | 5 | Graph-structured stack (shipped) | 61 min | 4,097,240 | 0 |
 
-### Stress suite, Valgrind, and static checks
+### Stress suite, Valgrind, static checks, and TLA+ formal verification
 
 - **Pathological stress suite (`make stress`, `test/stress.c`):** 126 of 126 checks pass in 124 seconds under an 8 GB cap. Covers nesting to `10^7` levels, ambiguous parameter lists (`f(a, a, ..., a int)` with 100,000 identical identifiers parses in 0.18 s on the GSS engine), unterminated strings and comments, NUL bytes, 10 MB random token soup, lengths from `0xFFFFFFF0` to `2^64 - 1` backed by `PROT_NONE` pages, memory limits from `0` to `4 GiB`, a 220 MB valid Go file, and 20-thread concurrency torture runs (**5.13 million parses** over 60 seconds with random memory limits, retention caps, and mutated inputs: 0 mismatches).
 - **Valgrind (`memcheck`, `helgrind`, `drd`):** `memcheck` on a 1-in-20 sample of all four corpora (1,054 files) reports 0 errors and 0 bytes definitely or indirectly lost. `helgrind` and `drd` with 4 threads across 100 Go and 100 Java files report 0 race or lock errors.
 - **Zero writable static state (`make check-static`):** Verifies that no object file in `libtsasm.a` has any non-empty writable allocated section other than `.data.rel.ro`.
+- **TLA+ formal verification (`verification/parser-memory/`, `verification/glr-stack/`):** Two TLA+ models tied line-by-line to `src/parser.s` via `anchors.tsv` model-check (1) buffer growth, `C_MEMLIMIT` charging, `MAP_MIN` heap-to-`mmap` migration, per-parse `C_NAVAIL` node budgets, mid-parse `p_limit` / `p_oom` unwinding, and `C_RETAIN` inter-parse retention (`ParserMemory.tla`, 7 invariants, 7 mutant checks + fix verification), and (2) the GLR graph-structured stack, single-link in-place node recycling, extension-block attachment, version condensation, and mark-and-sweep stack-node GC (`GlrStack.tla`, 6 invariants, 9 mutant checks). Run both models and all 16 mutant checks with `verification/parser-memory/check.sh --all --mutants`.
 
 ## How it maps tree-sitter semantics
 
@@ -182,6 +183,7 @@ sh scripts/parity.sh        # verify 100% node parity across Go, C, Java, and JS
 make stress                 # run full 126-check stress suite (~2 min)
 make fuzz                   # build libFuzzer binaries per grammar in build/fuzz/
 make fuzz-regress           # replay regression corpus in both guard-page modes
+verification/parser-memory/check.sh --all --mutants # run TLA+ models and mutant checks
 sh scripts/scaling.sh       # benchmark tsasm vs C tree-sitter at 1, 6, 12, and 20 workers
 ```
 
@@ -196,4 +198,5 @@ sh scripts/scaling.sh       # benchmark tsasm vs C tree-sitter at 1, 6, 12, and 
 - `test/`: C tree-sitter parity harness (`ref.c`, `check.c`), multi-threaded benchmark (`mtspeed.c`), memory profiler (`memprof.c`), C prototype (`proto.c`), and stress suite (`stress.c`).
 - `fuzz/`: libFuzzer harness (`target.c`), `PROT_NONE` guard-page allocator (`guard.c`), and regression inputs (`regress/`).
 - `scripts/covinstr.py`: assembly basic-block instrumenter for libFuzzer coverage counters.
+- `verification/`: TLA+ formal models (`ParserMemory.tla`, `GlrStack.tla`), code-anchor harnesses (`check.sh`, `anchors.tsv`, `expected.tsv`), and C counterexample reproduction (`repro.c`).
 - `results/`: raw parity, A/B optimization, retention, and CPU-pinned scaling logs.

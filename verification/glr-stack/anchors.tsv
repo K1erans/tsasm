@@ -1,0 +1,16 @@
+# file	expected count	exact text	what in GlrStack.tla mirrors it
+src/parser.s	1	mov byte ptr [r8+SN_MARK], 1          # the base node	GCMarksBase in RunGC (node 0 marked before root traversal)
+src/parser.s	1	movzx edi, word ptr [rax+SN_NL]       # link count | mark << 8	RunGC sweep dispatch on SN_NL | (SN_MARK << 8)
+src/parser.s	1	mov byte ptr [rax+SN_MARK], 0	GCClearsMarks in RunGC (clears SN_MARK on surviving nodes 1..C_SNN-1)
+src/parser.s	1	mov dword ptr [r15+C_XFREE], edi	GCSweepsExtBlocks in RunGC (returns unmarked node's SN_EXT to C_XFREE)
+src/parser.s	1	mov byte ptr [rax+SN_NL], 0	GCSweepsExtBlocks in RunGC (zeroes SN_NL after freeing SN_EXT)
+src/parser.s	1	mov byte ptr [r8+SN_MARK], 0	GCClearsMarks in RunGC (clears SN_MARK on base node 0)
+src/parser.s	2	mov dword ptr [r15+C_SFREE], r10d	RunGC and .Lad_inplace store updated C_SFREE head
+src/parser.s	2	cmp dword ptr [r15+C_NH], 1	InPlaceRequiresSingleVersion in .Lad_inplace and .Lmain_newpos
+src/parser.s	1	cmp byte ptr [r8 + r11*8 + SN_NL], 1	InPlaceRequiresSingleLink in .Lad_inplace
+src/parser.s	1	cmp byte ptr [r10+SN_NL], 1	InPlaceRequiresSingleLink in p_reduce_fast (.Lrf_walk)
+src/parser.s	1	cmp r13d, r12d	AddLinkRejectsSelf in p_add_link (TryAddSelfLink)
+src/parser.s	1	cmp dword ptr [rcx + r12*8 + H_DEAD], 0	MergeChecksLive in p_merge (version a must be live)
+src/parser.s	1	cmp dword ptr [rcx + r13*8 + H_DEAD], 0	MergeChecksLive in p_merge (version b must be live)
+src/parser.s	3	cmp dword ptr [rax + rbx*8 + H_DEAD], 0	CondenseRemovesDead in .Lmain_condense and .Lmain_adv
+src/parser.s	1	cmp dword ptr [r15+C_NH], MAXVERSIONS	Condense version cap in .Lcd_cap

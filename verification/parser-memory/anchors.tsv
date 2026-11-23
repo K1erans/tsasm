@@ -1,0 +1,24 @@
+# file	expected count	exact text	what in ParserMemory.tla mirrors it
+src/parser.s	1	cmp rax, qword ptr [r15+C_MEMLIMIT]	ChargesBeforeAlloc in GrowNodes, GrowWorkSmall, GrowWorkMapMin, EmitOut
+src/parser.s	1	cmp r11, MAP_MIN                    # small: malloc's heap	MigratesAtMapMin in KindAfterGrow (heap below MAP_MIN)
+src/parser.s	1	cmp r10, MAP_MIN                    # already mapped: grow the mapping	MigratesAtMapMin in KindAfterGrow (mremap vs mmap+memcpy+free)
+src/parser.s	1	mov qword ptr [r15+C_MEMUSED], rcx	CommitsAfterAlloc in GrowOOM (pointer, capacity and usage committed only at label 5)
+src/parser.s	1	cmp esi, dword ptr [r15+C_NODELIM]	CapsNavailByNodeLim in GrowNodes (p_grow_nodes enforces per-parse C_NODELIM)
+src/parser.s	1	cmova ecx, dword ptr [r15+C_NODELIM]	CapsNavailByNodeLim in Navail (p_set_navail clamps C_NCAP to C_NODELIM)
+src/parser.s	1	mov dword ptr [r15+C_NAVAIL], ecx	Navail stored in ParseEntry and GrowNodes
+src/parser.s	1	mov rsp, qword ptr [r15+C_SAVEDRSP]	p_limit / p_oom unwind mid-parse to .Lmain_ret (phase' = "ret_err")
+src/parser.s	1	cmp rsi, MAP_MIN	AllocatorKindConsistent (p_free_buf branches on MAP_MIN between munmap and free)
+src/parser.s	1	mov qword ptr [r15+C_MEMUSED], rax	p_release_work sets C_MEMUSED = C_OUTCAP << 4 (memUsed' = outCap in MainRetOk)
+src/parser.s	1	RELEASE C_OUT, 16	p_release frees C_OUT in addition to working buffers
+src/parser.s	1	mov qword ptr [r15+C_MEMUSED], 0	p_release zeroes C_MEMUSED
+src/parser.s	1	cmp dword ptr [r15+C_NCAP], 0       # drop the last parse's big output array	DropsBigOutAfterWorkRelease in ParseEntry (detects p_release_work from previous big parse)
+src/parser.s	1	cmp dword ptr [r15+C_OUTCAP], 0	DropsBigOutAfterWorkRelease in ParseEntry (drops C_OUT when C_NCAP == 0 and C_OUTCAP != 0)
+src/parser.s	1	mov rcx, qword ptr [r15+C_RETAIN]   # a big parse gives its buffers back now,	MainRetOk / MainRetErr retain check at .Lmain_ret
+src/parser.s	1	cmp qword ptr [r15+C_MEMUSED], rcx  # keeping only the nodes it returns	MainRetOk / MainRetErr memUsed > retain branch
+src/parser.s	2	call p_release_work	p_release and .Lmain_ret (MainRetOk)
+src/parser.s	1	cmovns rdx, qword ptr [r15+C_OUT]	ClearsResultOnError in MainRetOk / MainRetErr (*nodes = C_OUT on rax >= 0, NULL on rax < 0)
+src/parser.s	1	mov qword ptr [rdi+C_MEMLIMIT], rsi	SetLimit (tsasm_parser_set_memory_limit)
+src/parser.s	1	mov qword ptr [rdi+C_RETAIN], rsi	SetRetain (tsasm_parser_set_retain)
+src/parser.s	2	cmp qword ptr [rdi+C_MEMUSED], rsi	ReleasesOnLoweredCap in SetLimit and SetRetain
+tsasm.h	1	keeping only the node array it	BigParseOutputDropped contract in tsasm_parser_set_retain doc comment
+tsasm.h	1	returns, and the next parse frees that too.	BigParseOutputDropped contract in tsasm_parser_set_retain doc comment
