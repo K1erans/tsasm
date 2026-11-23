@@ -1,362 +1,199 @@
 # tsasm: a reentrant tree-sitter parser runtime in x86-64 assembly
 
-`libtsasm.a` parses source text with tree-sitter's parse tables and returns the visible syntax
-tree as a flat pre-order array. The parser loop, GLR forking and merging, tree building and the
-output walk are hand-written GNU as (`src/parser.s`). Each grammar's tables and lexer are
-generated as assembly by `gen/gen.py` from that grammar's tree-sitter `parser.c`. No C runs at
-parse time; libc is used only for `realloc`, `free` and `aligned_alloc`.
+`tsasm` (`libtsasm.a` and the Go package `github.com/K1erans/tsasm`) parses source text with tree-sitter's parse tables and returns the visible syntax tree as a flat, pre-order node array.
 
-Built-in grammars (ABI 15 `parser.c`, no external scanners):
+The parser loop, GLR stack forking and merging, tree arena, and pre-order output walk are hand-written x86-64 GNU assembly (`src/parser.s`). An assembly generator (`gen/gen.py`) compiles each grammar's tree-sitter `parser.c` into native x86-64 lexer state machines and read-only parse tables. No C runs at parse time. `libc` is used only for `realloc`, `free`, and `aligned_alloc`, while buffers of 128 KiB or larger use `mmap` and `mremap` directly.
 
-| grammar | version | function |
-|---|---|---|
-| Go | tree-sitter-go v0.25.0 | `tsasm_language_go()` |
-| C | tree-sitter-c v0.24.2 | `tsasm_language_c()` |
-| Java | tree-sitter-java v0.23.5 | `tsasm_language_java()` |
-| JSON | tree-sitter-json v0.24.8 | `tsasm_language_json()` |
+## At a glance
 
-## Build
+Measured on the Go 1.26.5 standard library (`src/`, 7,710 files, 90.3 MB in memory) on an Intel i9-13905H (6 P-cores with SMT, 8 E-cores, 20 threads):
 
-    make                # -> libtsasm.a (python3, GNU as, ar); tsasm.h is the header
-    make check-static   # fails if the library has any writable static data
+| Workers | C tree-sitter 0.25.0 | `gotreesitter` 0.58.0 (patched) | `tsasm` | `tsasm` vs C | `tsasm` vs `gotreesitter` |
+|---|---:|---:|---:|---:|---:|
+| 1 (pinned P-core) | 7.8 MB/s | 1.0 MB/s | **72.3 MB/s** | **9.3x** | **72x** |
+| 6 | 47.9 MB/s | 5.9 MB/s | **402.7 MB/s** | **8.4x** | **68x** |
+| 12 | 76.4 MB/s | 8.3 MB/s | **599.6 MB/s** | **7.8x** | **72x** |
+| 20 | 93.0 MB/s | 9.6 MB/s | **752.1 MB/s** | **8.1x** | **78x** |
 
-`make` reads each grammar's `parser.c` from the Go module cache (`GRAMMAR_<name>=` overrides a
-path). The library is position-independent and works in PIE executables.
+C tree-sitter's numbers measure parse time alone. `tsasm`'s numbers include emitting the flat pre-order node array and copying it into a Go slice.
 
-To add a grammar: add its name to `GRAMMARS` and a `GRAMMAR_<name>` path in the Makefile,
-declare `tsasm_language_<name>()` in `tsasm.h`, and add a row to `test/langs.h` so the parity,
-fuzz and stress tools know its C reference. The generator rejects grammars it cannot handle:
-external scanners, more than 256 production ids, alias sequences longer than 16.
+Across all four built-in ABI 15 grammars, `tsasm` matches C tree-sitter v0.25.0's cursor walk **100% node-for-node** (symbol, named flag, grammar field ID, byte range, and parent index) on every error-free file:
 
-## API
+| Grammar | Reference version | Corpus | Exact node-array match | Mismatches | Function |
+|---|---|---|---:|---:|---|
+| Go | `tree-sitter-go` v0.25.0 | Go 1.22 `src` (6,513 files, 70.3 MB) + Go 1.26.5 `src` (7,710 files, 90.3 MB) | **6,464 / 6,464** and **7,654 / 7,654 (100%)** | 0 | `tsasm_language_go()` |
+| C | `tree-sitter-c` v0.24.2 | System headers and C testdata (8,732 files, 436 MB) | **3,556 / 3,556 (100%)** | 0 | `tsasm_language_c()` |
+| Java | `tree-sitter-java` v0.23.5 | Guava (3,267 files, 29.7 MB) | **3,254 / 3,254 (100%)** | 0 | `tsasm_language_java()` |
+| JSON | `tree-sitter-json` v0.24.8 | App resources and testdata (2,539 files, 48.7 MB) | **2,529 / 2,529 (100%)** | 0 | `tsasm_language_json()` |
 
-The whole contract is in `tsasm.h`.
+On every file that C tree-sitter rejects with a syntax error (49 Go, 5,176 C, 13 Java, 10 JSON), `tsasm` rejects the file as well.
 
-```c
-TsasmParser *p = tsasm_parser_new();                 // one per thread (or per call site)
-const TsasmNode *nodes;
-int64_t n = tsasm_parse(p, tsasm_language_go(), src, len, &nodes);
-if (n > 0) { /* nodes[0..n) is the tree, valid until the next parse on p */ }
-tsasm_parser_free(p);
+## Why it is fast
+
+- **Compiled assembly lexers and dense tables.** `gen/gen.py` compiles each grammar's `parser.c` into position-independent x86-64 jump tables for the lexer and dense lookup tables in `.data.rel.ro`. Switching languages on a parser swaps one read-only descriptor pointer.
+- **Graph-structured stack (GLR) with single-link and fork fast paths.** `src/parser.s` ports C tree-sitter's graph-structured stack (`stack.c`) and GLR driver (`advance`, `reduce`, `accept`, `condense_stack`) with two fast paths in front of the general iterator walk. A reduction whose path has one link per node builds in place and recycles popped stack nodes immediately. A reduction that forks into distinct predecessors skips the general iterator grouping pass. Those fast paths recover a 36% general-GSS overhead down to 3.1% over a static single-stack parser (`results/ab_single_thread_gss.txt`).
+- **Compact arena nodes and shared lookahead leaves.** Internal parse-tree nodes are 24 bytes and shifted leaf tokens are 16 bytes (down from 32 bytes). When multiple GLR stack versions shift the same token, they share one 16-byte leaf allocation. Large Go parses use 21.3 bytes of working buffer per input byte (`results/ab_leafshare.txt`).
+- **Flat 16-byte pre-order output.** Instead of returning a pointer-linked tree that callers must walk through a stateful C cursor via cgo, `tsasm` emits visible nodes into a contiguous `TsasmNode` array (`16 bytes` per node: `symbol`, `named`, `field`, `start_byte`, `end_byte`, `parent`).
+- **Zero shared mutable state.** Every buffer, arena, and limit lives inside the caller's `TsasmParser`. `make check-static` inspects the ELF section tables of `libtsasm.a` and fails the build if any object contains a writable static section.
+- **Direct `mmap` and `mremap` with bounded retention.** Working buffers of 128 KiB or larger bypass `malloc` thresholds via `mmap` (with `MADV_HUGEPAGE`) and grow via `mremap`. Between parses, each parser retains at most 32 MiB of working buffers by default (`tsasm_parser_set_retain`) and returns oversized arenas directly to the kernel, cutting 20-thread peak RSS by 30% (`results/ab_retain.txt`).
+
+## Quick start
+
+### Go (`linux/amd64`, cgo)
+
+The repository root is a Go package. `cgo` assembles the pre-generated `.s` files directly with the system C toolchain, so `go get` requires no separate `make` step or `CGO_LDFLAGS`:
+
+```sh
+go get github.com/K1erans/tsasm
 ```
 
-- **Caller-owned context.** A `TsasmParser` holds every piece of mutable state: buffers, the
-  output array and the memory limit. The library has no writable static data, which
-  `make check-static` enforces. Threads parse at the same time with one parser each. A parser
-  serves one call at a time and may move between threads.
-- **Languages are read-only.** A `TsasmLanguage` is a table descriptor in `.data.rel.ro`, shared
-  by every thread. Any parser can parse any language, and switching costs nothing.
-- **Output.** `TsasmNode` is 16 bytes: public `symbol` (after alias resolution, as
-  `ts_node_symbol`), `named`, `field`, `start_byte`, `end_byte`, `parent` (index into the same
-  array, -1 for the root). Nodes are the visible ones (named and anonymous, as tree-sitter's
-  `ts_node_child` walk shows them) in pre-order. `tsasm_language_symbol_name()` gives the same
-  strings as `ts_node_type`. `field` is the node's grammar field id (0 for none) as
-  `ts_tree_cursor_current_field_id` gives it, and `tsasm_language_field_name()` names it.
-- **Errors.** `TSASM_ERR_SYNTAX` (-1): the input is not in the language. There is no error
-  recovery. `TSASM_ERR_LIMIT` (-3): a budget ran out. `TSASM_ERR_NOMEM` (-4): the allocator
-  failed. After any error the parser stays usable and `*nodes` is NULL.
-- **Memory.** `tsasm_parser_set_memory_limit()` caps the bytes a parser may hold (1 GiB by
-  default). Growth is charged against the limit before it is allocated. Buffers of 128 KiB or
-  more are mapped with `mmap` (huge pages advised) and grown with `mremap`, so memory a parser
-  frees goes back to the system whatever malloc's thresholds are. `tsasm_parser_set_retain()`
-  caps what a parser keeps between parses (32 MiB by default): a parse that needed more frees
-  its working buffers before it returns, keeping only the node array it returns, and the next
-  parse frees that too. `tsasm_parser_free()` frees everything.
-- **Retention trade-off.** Freed memory comes back zeroed by the kernel when the next big parse
-  touches it. On GOROOT with 20 threads (`test/mtspeed`), 32 MiB parses at full speed with 30%
-  less peak memory than keeping every buffer; 8 MiB uses a fifth less again but parses 20-30%
-  slower, because 20 threads zeroing fresh pages share the memory bus. Inside jinter, where
-  parsing is part of the work, 8 MiB costs about 6% at 20 workers for 58% less peak memory
-  (`results/ab_retain.txt`).
-
-### Go
-
-The repository root is the Go package `github.com/K1erans/tsasm` (linux/amd64, cgo). cgo
-assembles the library with the C compiler, so `go get` is all it takes: no `make`, no
-`CGO_LDFLAGS`.
-
 ```go
-p, err := tsasm.NewParser() // one per goroutine
-defer p.Close()
-nodes, err := p.Parse(tsasm.Lookup("go"), src) // tsasm.ErrSyntax, ErrLimit or ErrNoMem
-for _, n := range nodes { // valid until p's next Parse or Close
-	l := tsasm.Lookup("go")
-	fmt.Println(l.FieldName(n.Field), l.SymbolName(n.Symbol), n.Start, n.End, n.Parent)
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/K1erans/tsasm"
+)
+
+func main() {
+	p, err := tsasm.NewParser() // one per goroutine
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer p.Close()
+
+	lang := tsasm.Lookup("go")
+	nodes, err := p.Parse(lang, []byte("package main\nfunc main() {}\n"))
+	if err != nil {
+		log.Fatal(err) // tsasm.ErrSyntax, ErrLimit, or ErrNoMem
+	}
+	for _, n := range nodes { // valid until p's next Parse or Close
+		fmt.Println(lang.FieldName(n.Field), lang.SymbolName(n.Symbol), n.Start, n.End, n.Parent)
+	}
 }
 ```
 
-The package builds from `zparser_linux_amd64.s` and `zlang_<grammar>_linux_amd64.s`, copies of
-`src/parser.s` and the generated `build/lang_<grammar>.s`. After changing either, run
-`make gopkg`; `make check-gopkg` fails if the copies are stale. The grammar tables are under the
-grammars' MIT licenses (`NOTICE`).
+### C (`libtsasm.a`)
 
-### Budgets
+The full contract is in `tsasm.h`:
 
-Every parse is bounded. Each budget returns `TSASM_ERR_LIMIT` and leaves the parser usable.
+```c
+#include "tsasm.h"
 
-| budget | value | headroom on real code |
+TsasmParser *p = tsasm_parser_new(); // one per thread
+const TsasmNode *nodes;
+int64_t n = tsasm_parse(p, tsasm_language_go(), src, len, &nodes);
+if (n > 0) {
+    // nodes[0..n) holds the visible syntax tree in pre-order,
+    // valid until the next parse on p or tsasm_parser_free(p).
+}
+tsasm_parser_free(p);
+```
+
+- **Caller-owned context.** A `TsasmParser` owns all mutable buffers, the output array, and the memory limit. Threads parse concurrently with one parser each, and a parser may move between threads between calls.
+- **Read-only languages.** A `TsasmLanguage` is an immutable descriptor in `.data.rel.ro` shared across all threads.
+- **Node layout.** Each `TsasmNode` is 16 bytes:
+  - `symbol` (`uint16_t`): public grammar symbol after alias resolution, matching `ts_node_symbol`. `tsasm_language_symbol_name()` returns the same string as `ts_node_type`.
+  - `named` (`uint8_t`): 1 for named nodes, 0 for anonymous tokens.
+  - `field` (`uint8_t`): grammar field ID (0 for none), matching `ts_tree_cursor_current_field_id`. `tsasm_language_field_name()` returns its string name.
+  - `start_byte`, `end_byte` (`uint32_t`): byte offsets in the source slice.
+  - `parent` (`int32_t`): index of the parent node in `nodes`, or `-1` for the root.
+- **Errors.** `TSASM_ERR_SYNTAX` (`-1`) when the input has a syntax error (no error recovery), `TSASM_ERR_LIMIT` (`-3`) when a budget is exceeded, and `TSASM_ERR_NOMEM` (`-4`) when allocation fails. After any error, `*nodes` is `NULL` and the parser remains valid for reuse.
+
+### Resource budgets
+
+Every parse runs inside deterministic resource caps. Exceeding any budget returns `TSASM_ERR_LIMIT` and leaves the parser reusable:
+
+| Budget | Limit | Headroom on real corpora |
 |---|---|---|
-| memory | `tsasm_parser_set_memory_limit`, default 1 GiB | the 1.9 MB Go file that needs the most holds 59 MB (`test/memprof`) |
-| work | 64 units per input byte + 10000 | worst accepted file ≥ 1 KB uses 1.30 units/byte (Go), 0.85 (C), 0.56 (Java), 0.78 (JSON) |
-| tree nodes | 32 per input byte + 100000, at most 2^27 | 2^27 keeps every 32-bit size computation exact |
-| input length | below 4 GiB | byte offsets are 32-bit, as in tree-sitter |
+| Memory | `tsasm_parser_set_memory_limit` (default 1 GiB) | The largest 1.9 MB Go file peaks at 59 MB (`test/memprof`). |
+| Work steps | `64 * input_bytes + 10,000` | Worst accepted file >= 1 KB uses 1.30 units/byte (Go), 0.85 (C), 0.56 (Java), 0.78 (JSON). |
+| Tree nodes | `min(2^27, 32 * input_bytes + 100,000)` | `2^27` keeps every 32-bit byte-size calculation exact (caps one file at ~200 MB of Go). |
+| Input length | `< 4 GiB` | Byte offsets are 32-bit unsigned integers, matching tree-sitter. |
+
+`tsasm_parser_set_retain(p, bytes)` controls how much working memory a parser keeps between parses (default 32 MiB). If a parse needed more than the retain cap, its internal arenas are unmapped before `tsasm_parse` returns, leaving only the returned `TsasmNode` array.
+
+## Benchmarks and scaling analysis
+
+### Multi-core scaling (`results/scaling.txt`)
+
+Measured with `scripts/scaling_pinned.sh` on Go 1.26.5 `src` (7,710 files, 90.3 MB), sampling the active CPU clock frequencies during each run:
+
+- **1 to 6 P-cores:** Per-GHz throughput stays flat at **18.7 to 20.2 MB/s per GHz per worker**. Six workers pinned to six physical P-cores reach **409.4 MB/s** (5.8x one worker). No shared lock or cache line slows the workers down.
+- **SMT contribution:** Running 12 workers across all 6 P-cores (12 threads) reaches **545.0 MB/s** (+38% per physical core).
+- **E-core throughput:** An E-core retires **0.80x** a P-core's work per GHz and runs at 2.5 to 2.7 GHz. Eight workers pinned to the 8 E-cores reach **293.1 MB/s**.
+- **20-thread package power limit:** With all 20 threads active, the laptop's package power limit pulls P-cores from 3.76 GHz down to 3.19 GHz and E-cores to 2.53 GHz. A hardware model from the three measurements above predicts 818 MB/s at those clocks; `tsasm` measures **767.0 MB/s** (94% of the linear core-GHz ceiling).
+
+### Arena retention vs memory (`results/ab_retain.txt`)
+
+On Go 1.26.5 `src` with 20 workers, freeing buffers above 32 MiB after large files drops peak RSS by 30% (from 0.83 to 0.88 GB down to 0.58 to 0.62 GB) at a 1.6% throughput cost. Inside [jinter](https://github.com/K1erans/jinter)'s chunk splitter (`chunk.Split`), a 32 MiB retain cap parses at **325 to 332 MB/s** across 20 workers, while an 8 MiB retain cap cuts peak RSS above the corpus by 58% (1.78 GB down to 735 MB) for a 6% speed trade-off.
+
+### Comparison with `gotreesitter` (`bench/gts_perf.md`)
+
+In the same benchmark harness on Go 1.26.5 `src`, stock `gotreesitter` v0.58.0 runs at 1.0 MB/s (1 worker) and 2.3 MB/s (20 workers) because its per-parse `runtime.ReadMemStats` calls stop the world across all goroutines. Replacing `ReadMemStats` with `runtime/metrics` raises `gotreesitter` to 1.0, 5.9, 8.3, and 9.6 MB/s at 1, 6, 12, and 20 workers (with 92.54% file acceptance parity against C tree-sitter). Against the patched build, `tsasm` is **68x to 78x faster** at every worker count with 100% parity.
+
+## Safety and verification
+
+### Coverage-guided fuzzing (`fuzz/target.c`)
+
+`scripts/covinstr.py` instruments the assembly with libFuzzer coverage counters, and both the harness and the C reference build with AddressSanitizer. Each input buffer is placed flush against a `PROT_NONE` guard page, after the last byte in `TSASM_GUARD=over` and before the first byte in `TSASM_GUARD=under`, and the assembly's own arenas use the same guard-page allocator. Every fuzz input is checked five ways:
+
+1. A reused parser's output satisfies the structural contract (valid symbol IDs, spans within parent and input bounds, valid pre-order parent chain).
+2. A fresh parser produces identical output bytes, proving no state leaks across parses.
+3. Injecting an allocation failure at an input-selected call site returns either `TSASM_ERR_NOMEM` or the exact tree, and the next parse on the same parser still succeeds with the exact tree.
+4. Running under a tight memory limit returns either `TSASM_ERR_LIMIT` or the exact tree.
+5. `tsasm` never accepts an input that C tree-sitter rejects.
+
+Across five fuzzing campaigns (45 job-hours, **17.9 million executions** across Go, C, Java, and JSON in both guard modes, plus replaying all 11,425 accumulated corpus inputs on every build):
+
+| Round | Target build | Wall time | Executions | Findings |
+|---|---|---:|---:|---|
+| 1 | Initial harness build | 57 min | ~600,000 | 2 bugs fixed (`fuzz/regress/`), 1 harness fix |
+| 2 | Post-fix build | 54 min | 2,663,018 | 0 |
+| 3 | Speed-optimized build | 16 min | 902,519 | 0 |
+| 4 | Final pre-GSS library | 150 min | 9,589,679 | 0 |
+| 5 | Graph-structured stack (shipped) | 61 min | 4,097,240 | 0 |
+
+### Stress suite, Valgrind, and static checks
+
+- **Pathological stress suite (`make stress`, `test/stress.c`):** 126 of 126 checks pass in 124 seconds under an 8 GB cap. Covers nesting to `10^7` levels, ambiguous parameter lists (`f(a, a, ..., a int)` with 100,000 identical identifiers parses in 0.18 s on the GSS engine), unterminated strings and comments, NUL bytes, 10 MB random token soup, lengths from `0xFFFFFFF0` to `2^64 - 1` backed by `PROT_NONE` pages, memory limits from `0` to `4 GiB`, a 220 MB valid Go file, and 20-thread concurrency torture runs (**5.13 million parses** over 60 seconds with random memory limits, retention caps, and mutated inputs: 0 mismatches).
+- **Valgrind (`memcheck`, `helgrind`, `drd`):** `memcheck` on a 1-in-20 sample of all four corpora (1,054 files) reports 0 errors and 0 bytes definitely or indirectly lost. `helgrind` and `drd` with 4 threads across 100 Go and 100 Java files report 0 race or lock errors.
+- **Zero writable static state (`make check-static`):** Verifies that no object file in `libtsasm.a` has any non-empty writable allocated section other than `.data.rel.ro`.
 
 ## How it maps tree-sitter semantics
 
-- **Lexing.** The parse state's lex mode picks the lexer entry. When the word token is lexed, the
-  keyword lexer runs. The keyword is used if it covers the whole word and the state has an action
-  for it, or the state's reserved-word set (ABI 15) contains it. A keyword with no action after
-  reductions falls back to the word token. UTF-8 decodes like `ts_decode_utf8`. A token accepted
-  before skipped whitespace starts where it ends, as in `ts_lexer_finish`.
-- **Shift and reduce.** `SHIFT_REPEAT` actions are dropped, as `ts_parser__advance` does. A reduce
-  pops N non-extra entries; extras in between become children, and trailing extras are pushed
-  back above the new node. Accept splices the root's children with leading and trailing extras.
-- **Output.** Hidden nodes are flattened. Aliases come from the parent's production alias
-  sequence, indexed by structural child position. An alias makes a hidden node visible.
-- **Fields.** `gen.py` turns each production's field map into a field id per structural child
-  position (the first entry that isn't inherited, as the C cursor reads it). The output walk
-  gives a node the field at its own position, or else the one its deepest hidden ancestor got,
-  which each hidden node's frame passes down; extras get none. It costs about 1-2% of parse
-  time (`test/mtspeed`, GOROOT: one thread 1.032-1.036 s per pass against 1.016-1.023,
-  20 threads 0.090 s against 0.088).
-- **Token cache.** A single-entry cache follows the C runtime's `can_reuse_first_leaf` rules,
-  which matters when several versions lex at the same position.
-- **GLR.** A port of C tree-sitter's graph-structured stack (`stack.c`) and GLR driver
-  (`ts_parser__advance`, `ts_parser__reduce`, `ts_parser__accept`, `ts_parser__condense_stack`),
-  limited to what error-free parsing needs. Stack nodes are 24 bytes with one inline link and
-  up to 7 more in 64-byte extension blocks (C's `MAX_LINK_COUNT` 8). A pop walks every path with
-  up to 64 iterators (`MAX_ITERATOR_COUNT`) and groups the results into slices as `add_slice`
-  does. `select_children` picks between alternative child lists (dynamic precedence, then
-  `ts_subtree_compare`). Heads in the same state at the same position merge, recursively
-  merging links, and condense keeps at most 6 versions (`MAX_VERSION_COUNT`), as C does, so
-  there is no separate version cap. Left out: error costs and recovery, pause/resume (a version
-  with no action dies), external tokens and incremental reuse. Two fast paths sit in front of
-  the general code: a reduce whose path has one link per node builds in place and frees the
-  popped nodes, and a reduce that forks into distinct predecessors skips the iterator walk.
-  A mark-and-sweep pass recycles the rest when the node arena fills. `test/proto.c` is the C
-  prototype the assembly follows; `make proto` checks it like the library.
+- **Lexing.** The current parse state's lex mode selects the lexer entry point. When a word token is scanned, the keyword lexer runs and promotes the token if the keyword matches the full word and either has a valid action in the current state or belongs to the state's ABI 15 reserved-word set. If a keyword has no valid action after pending reductions, lexing falls back to the word symbol. UTF-8 decoding matches `ts_decode_utf8`. A token accepted before skipped whitespace resets its start offset to its end offset, matching `ts_lexer_finish`.
+- **Shift, reduce, and accept.** `SHIFT_REPEAT` actions are dropped, matching `ts_parser__advance`. A reduction pops `N` non-extra stack entries, attaches intervening extras as children, and pushes trailing extras back above the reduced node. Accept splices leading and trailing extras into the root node's children.
+- **Hidden nodes, aliases, and fields.** Hidden nodes are flattened during the pre-order output walk. Aliases are resolved from the parent production's alias sequence by structural child position, making aliased hidden nodes visible. `gen/gen.py` precomputes a field ID table per production and structural child index; the output walk assigns each visible node its own structural field ID or the field ID passed down from its deepest hidden ancestor (adding ~1.5% to parse time).
+- **Single-entry token cache.** Follows C tree-sitter's `can_reuse_first_leaf` rules when multiple GLR versions lex at the same byte offset.
+- **Intentional omissions.** Error recovery, pause/resume, external C scanners, and incremental edit reuse are omitted by design.
 
-## Results
+## Build and development tools
 
-### Parity
+```sh
+make                        # build libtsasm.a (requires python3, GNU as, ar)
+make check-static           # fail if libtsasm.a has any writable static data
+make gopkg                  # copy src/parser.s and build/lang_*.s to root Go package
+make check-gopkg            # verify Go package assembly copies are up to date
+make tools                  # build test/check_all, test/mtspeed, test/one, test/fuzz
+sh scripts/parity.sh        # verify 100% node parity across Go, C, Java, and JSON
+make stress                 # run full 126-check stress suite (~2 min)
+make fuzz                   # build libFuzzer binaries per grammar in build/fuzz/
+make fuzz-regress           # replay regression corpus in both guard-page modes
+sh scripts/scaling.sh       # benchmark tsasm vs C tree-sitter at 1, 6, 12, and 20 workers
+```
 
-An exact match of the full node arrays (symbol, named, field, start, end, parent) against C
-tree-sitter v0.25.0's cursor walk, over files C parses without errors. `scripts/parity.sh`
-reruns all four and fails on any difference from `results/parity_<lang>.txt`.
+`make` locates each grammar's `parser.c` in the local Go module cache (override with `GRAMMAR_<name>=/path/to/parser.c`). To add a new ABI 15 grammar (without an external scanner, with at most 256 production IDs and alias sequences of length at most 16), add its name to `GRAMMARS` in `Makefile`, declare `tsasm_language_<name>()` in `tsasm.h`, and add an entry to `test/langs.h`.
 
-| grammar | corpus | exact match | mismatch | tsasm rejects, C accepts |
-|---|---|---|---|---|
-| Go | Go 1.22 `src`, 6513 files, 70.3 MB | 6464 / 6464 (**100%**) | 0 | 0 |
-| C | system headers and C testdata, 8732 files, 436 MB | 3556 / 3556 | 0 | 0 |
-| Java | Guava, 3267 files, 29.7 MB | 3254 / 3254 | 0 | 0 |
-| JSON | app resources and testdata, 2539 files, 48.7 MB | 2529 / 2529 | 0 | 0 |
+### Repository layout
 
-On every file C rejects, tsasm rejects too (49 Go, 5176 C, 13 Java, 10 JSON).
-
-### Speed and scaling
-
-Measured with `bench/` (`make bench-asm`) on 2026-11-22. The corpus is go1.26.5 `src` (7710
-files, 90.3 MB), held in memory, with files handed out largest first. Each cell is the median
-of 5 timed passes after a warm-up, C and asm in the same session, fuzzers paused. The machine is
-an i9-13905H (6 P-cores with SMT, 8 E-cores, 20 threads) on AC. "1w" is one worker pinned to a
-P-core.
-
-| workers | C tree-sitter 0.25.0 | tsasm | tsasm / C |
-|---|---:|---:|---:|
-| 1 | 7.8 MB/s | 72.3 MB/s | 9.3× |
-| 6 | 47.9 MB/s | 402.7 MB/s | 8.4× |
-| 12 | 76.4 MB/s | 599.6 MB/s | 7.8× |
-| 20 | 93.0 MB/s | 752.1 MB/s | 8.1× |
-
-C's column is parse only. tsasm's includes emitting the flat node array; bench copies it into
-a Go slice on top. On this corpus tsasm and C both accept 7654 files; parity is 100% (7654 / 7654). gotreesitter v0.58.0 in the same harness (12:38, same session as C): 1.0, 2.7, 2.2 and 2.3 MB/s;
-with a local patch that replaces its `runtime.ReadMemStats` calls (which pause every goroutine)
-with `runtime/metrics` (12:52, `bench/gts_perf.md`): 1.0, 5.9, 8.3 and 9.6 MB/s. Parity 92.54%
-either way. Against the patched build tsasm is 68–78× faster at every worker count.
-
-Single-thread cost of the reentrant, multi-grammar, graph-structured-stack runtime against the
-original static Go-only build: about +3.1% (old 1.199–1.220 s, new 1.236–1.260 s per pass, 6
-interleaved rounds on one P-core, per-round +2.5% to +4.0%, `results/ab_single_thread_gss.txt`).
-The GSS port first cost +36%; in-place and fork fast paths, inlined shift and reduce, and inline
-merge checks brought it back. The pre-GSS figure was also +3.1% (`results/ab_single_thread.txt`).
-Freeing big parses' buffers (the 32 MiB retain default) costs another 4.1% on one thread (1.364–1.367
-s before, 1.421–1.426 s after, 6 interleaved rounds) and 1.6% at 20 threads, for 30% less peak
-memory at 20 threads (0.83–0.88 GB to 0.58–0.62 GB with the corpus, `results/ab_retain.txt`).
-Tree nodes then shrank from 32 to 24 bytes (8 were padding): a big Go parse needs 24.6 bytes of
-buffers per input byte instead of 30.1, one thread is 0.4% faster and 20 threads 5.5% faster
-(0.115–0.116 s against 0.121–0.123 s per pass), peak memory 0.53–0.55 GB against 0.59–0.60
-(`results/ab_tree24.txt`). A shifted token's leaf then dropped to 16 bytes (it has no children, so no
-child index or precedence; reads of a childless tree's precedence give 0): 22.3 bytes per input
-byte for big Go files, Java -9%, JSON -11%, speed unchanged or slightly faster
-(`results/ab_leaf16.txt`). Versions that shift the same token now share its leaf, as C pushes one
-lookahead subtree onto each; before, nearly every dead leaf was such a duplicate. Big Go files 21.3
-bytes per input byte, Java -2%, speed unchanged (`results/ab_leafshare.txt`).
-
-**What limits scaling.** Measured with `scripts/scaling_pinned.sh` on the commit before the
-retention change, with the clock of the busy CPUs sampled during each run (`results/scaling.txt`):
-
-- Per-GHz throughput holds from 1 to 6 P-cores: 18.7 to 20.2 MB/s per GHz per worker. Six
-  workers on six P-cores give 409 MB/s, 5.8× one worker. Nothing shared slows the workers down.
-- SMT adds 38% per core (6 workers on 3 cores' 6 threads: 282 MB/s; 12 workers on 6 cores:
-  545 MB/s).
-- An E-core does 0.80× a P-core's work per GHz, and runs at 2.5–2.7 GHz against the P-cores'
-  3.2–3.8 GHz.
-- At 20 workers the package power limit pulls the P-cores to 3.19 GHz and the E-cores to
-  2.53 GHz. A model built from the three numbers above predicts 818 MB/s at those clocks; the
-  measurement was 767 MB/s (94%). C reaches 99% of the same model.
-
-So throughput follows core-GHz: SMT, E-cores and the power limit. The library has no locks and
-no shared writable data, and nothing in the measurements points to a memory-bandwidth wall. A
-software fix could recover at most the 6% gap to the model at 20 workers. C scales by a slightly
-larger factor (11.9× against 10.3× from 1 to 20 workers). Its clocks stay higher under load
-(P-cores at 3.65 GHz against 3.19 GHz with 20 workers), which is measured. That its lower IPC
-draws less power is an inference.
-
-### Safety evidence
-
-**Fuzzing.** `fuzz/target.c` is a libFuzzer target built once per grammar. The assembly gets
-libFuzzer coverage counters (`scripts/covinstr.py`), and the harness and the C reference build
-with AddressSanitizer. The input sits against a `PROT_NONE` page, after its last byte in one run
-and before its first byte in the other (`TSASM_GUARD=over|under`), so a read past either end
-faults. The asm's own buffers come from the same guard-page allocator. Each input is checked
-five ways:
-
-1. a reused parser's tree satisfies the output contract (symbol range, spans inside the parent
-   and the input, pre-order parent chain);
-2. a fresh parser gives the same bytes, so no state leaks between parses;
-3. an allocation failure injected at an input-chosen point gives `TSASM_ERR_NOMEM` or the same
-   tree, and the parser then reparses to the same tree;
-4. a low memory limit gives `TSASM_ERR_LIMIT` or the same tree;
-5. tsasm never accepts what C tree-sitter rejects.
-
-Five rounds on 2026-11-22, 8 jobs each (4 grammars × 2 guard modes), fork mode, inputs up to
-8 KiB, 20 s timeout, memory capped:
-
-| round | code | wall time | executions | findings |
-|---|---|---:|---:|---|
-| 1 | first harness build | 57 min | about 600,000 | 2 real bugs, 1 harness bug |
-| 2 | after the round 1 fixes | 54 min | 2,663,018 | none |
-| 3 | after the speed work | 16 min | 902,519 | none |
-| 4 | final pre-GSS library | 150 min | 9,589,679 | none |
-| 5 | graph-structured stack (shipped) | 61 min | 4,097,240 | none |
-| total | | 5.6 h (45 job-hours) | about 17.9 million | |
-
-Rounds 2 and 3 were stopped early so the next round would fuzz the code that ships. Each restart
-replayed the whole accumulated corpus (about 5,000 C, 2,000 Go, 2,000 Java and 630 JSON inputs)
-through the new binaries in both guard modes first, with no failures. Round 5 replayed all
-11,425 saved inputs through the GSS build first, then fuzzed it: 0 crashes, out-of-memory
-kills or oracle failures. libFuzzer saved one timeout and five slow units, all written in the
-same second across four grammars while valgrind loaded the machine; each replays in at most
-27 ms and passes every check, so they were a host stall (kept in `round5/stall_artifacts`).
-Coverage on the GSS build: 15,506 counters hit in C, 8,755 in Java, 7,289 in Go and 1,683 in
-JSON.
-
-Round 1 found two real bugs, both fixed and kept in `fuzz/regress/` (`make fuzz-regress`
-replays them in both guard modes):
-
-- The generated lexer's set-membership helper took its count in `ecx`, the register that holds
-  the accepted symbol. A non-ASCII lookahead that failed a set test after an accept returned
-  the count as the token. This bug was in the baseline generator.
-- A token accepted before skipped whitespace had its start after its end. C resets the start
-  to the end, and now tsasm does too.
-
-**Stress suite** (`make stress`, `test/stress.c`, capped at 8 GB): 126 of 126 checks pass on
-the final library in 124 s.
-
-- 124 pathological inputs: nesting to 10^7 levels, ambiguous parameter lists, generics,
-  unterminated strings and comments, NUL bytes, random bytes and token soup up to 10 MB, lengths
-  from 0xFFFFFFF0 to 2^64-1 over a `PROT_NONE` page (rejected without touching a byte), memory
-  limits from 0 to 4 GiB, and a 220 MB valid Go file. Each must give its expected class
-  (accept, syntax error, or limit), confirmed against C tree-sitter on a small instance, and the
-  parser must parse correctly afterwards.
-- Ambiguous parameter lists no longer copy stacks: `f(a, a, …, a int)` with 100,000 identical
-  names parses in 0.18 s (it returned `TSASM_ERR_LIMIT` at 400 names before the GSS port).
-- Retention (resident memory): a 20 MB parse peaks at +495 MiB and returns holding only its
-  86 MiB node array; the next small parse drops the parser to +1.5 MiB and freeing it to +0.7
-  MiB. With `tsasm_parser_set_retain(p, 0)` lowering the retain frees the node array at once
-  (+0.00 MiB). On the retention build: 126/126 checks, and 20 threads for 60 s ran 3.56M parses
-  (random memory limits and random retain settings included) with 0 mismatches.
-- Threads: 20 threads for 60 s ran 5.13M parses (persistent parsers, a fresh parser per file,
-  random memory limits, and mutated inputs) checked against a single-threaded reference: 0
-  mismatches, 0 anomalies.
-
-**valgrind.** memcheck over a 1-in-20 sample of every corpus on the GSS build (326 Go, 437 C,
-164 Java and 127 JSON files): 0 errors, 0 bytes definitely or indirectly lost; what remains at
-exit is the harness's 64 MiB compare buffer and the C reference's parser. The pre-GSS build
-gave the same result on 385/436/163/126 files. helgrind with 4 threads over 100 Go and 100 Java
-files on the GSS build: 0 errors. On the pre-GSS build, helgrind and DRD with 4 threads over 100 Go and
-100 Java files: 0 errors. The only suppressions are valgrind's default glibc and ld entries.
-
-**Static state.** `make check-static` reads every object's section table and fails on any
-non-empty allocated, writable section other than `.data.rel.ro`, which the loader makes
-read-only after relocation. The library has none.
-
-## Development tools
-
-    make tools          # test/check_all, test/mtspeed, test/one, test/fuzz (needs the
-                        # go-tree-sitter v0.25.0 module source for the C reference)
-    sh scripts/parity.sh        # parity of all four grammars vs results/ (memory-capped)
-    make stress                 # stress suite, about 5 minutes, capped at 8 GB
-    make stress-smoke           # under 2 minutes
-    make fuzz                   # one libFuzzer binary per grammar in build/fuzz/
-    make fuzz-regress           # replay every saved finding in fuzz/regress/
-    fuzz/run.sh go over 3600    # fuzz Go for an hour, guard page after the input
-    sh scripts/scaling.sh       # asm vs C throughput at 1/6/12/20 workers
-
-Layout:
-
-- `gen/gen.py` turns a grammar's `parser.c` into `build/lang_<name>.s`: dense parse table,
-  actions, lex modes, reserved words, symbol tables, alias sequences, names, the lexer state
-  machines and the `TsasmLanguage` descriptor.
-- `src/parser.s` is the runtime.
-- `test/ref.c` is the C tree-sitter reference emitting the same `TsasmNode` format.
-  `test/check.c` compares per file. `test/stress.c` is the stress suite. `test/mtspeed.c`
-  measures throughput at N workers for either engine.
-- `fuzz/target.c` is the libFuzzer target, `fuzz/guard.c` the guard-page allocator, and
-  `scripts/covinstr.py` adds libFuzzer coverage counters to the assembly.
-- `decisions.tsv` is the decision log of the reentrant and multi-grammar work.
-
-## What ARM64 support would take
-
-Everything outside the two assembly emitters carries over unchanged: the tables gen.py builds,
-the C reference, and the parity, fuzz, stress and scaling harnesses. The work is three pieces.
-
-1. **Port `src/parser.s` (about 1,700 lines) to AArch64.** The algorithm and data layout stay.
-   The instructions change throughout.
-   - Memory operands go away. x86 adds, compares and multiplies straight from memory
-     (`imul eax, [r15+C_LANG+L_NSYM]`, `cmp r14d, [r15+C_OUTCAP]`); AArch64 loads first.
-   - Addressing is narrower. `[base + index*scale + disp]` becomes an `add` plus
-     `ldr x, [base, index, lsl #n]`.
-   - `push`/`pop` become `stp`/`ldp` pairs with the stack kept 16-byte aligned at all times.
-     `cmov` becomes `csel`, `bt`/`btr` become `tbz`/`tbnz` and `bic`, and `rep stos`/`rep movs`
-     become loops or calls to `memset`/`memcpy`.
-   - There are 31 general registers instead of 16. The context pointer can stay in a
-     callee-saved register (x28 for r15), and the hot table bases (parse table, actions, symbol
-     output words) can live in x19 to x27 for the whole parse instead of being reloaded from
-     the descriptor. Expect fewer loads per token than on x86.
-   - The unwinding scheme carries over. `p_limit`/`p_oom` reset `sp` from the saved value and
-     branch to the epilogue.
-2. **Add an AArch64 backend to the lexer emitter in `gen/gen.py`.** The lexer is generated
-   code, so this is a second emitter (a few hundred lines), not hand porting. Jump-table
-   dispatch becomes `adr` + `ldrsw` of a relative offset + `br`, which stays position
-   independent. The lexer's register contract (position, end, state, token start and end) maps
-   onto x-registers one to one.
-3. **Port the coverage instrumenter.** `scripts/covinstr.py` saves flags with `pushfq`/`popfq`
-   around each counter increment. On AArch64 `ldrb`/`add`/`strb` without the `s` suffix leave
-   NZCV alone, so the increment needs only two scratch registers.
-
-Platform targets differ. Linux AArch64 uses the same ELF directives (`.type`, `.size`,
-`.section .data.rel.ro`) and can be tested with qemu-user for correctness. Apple Silicon needs
-Mach-O syntax as well: `_`-prefixed symbols, `@PAGE`/`@PAGEOFF` relocations, `__TEXT,__const`
-sections and no `.type`/`.size`. A thin macro layer or a per-platform emitter covers it. In both
-cases `scripts/parity.sh`, the fuzz targets and the stress suite then verify the port without
-changes.
-
-## Known gaps
-
-- **No error recovery,** by design: inputs with syntax errors return `TSASM_ERR_SYNTAX`.
-- **The memory limit counts capacity,** not bytes in use, so a parser's resident memory is
-  usually about half its charged total.
-- **The 2^27 node cap** limits one input to roughly 200 MB of Go. The stress suite's 220 MB Go
-  input returns `TSASM_ERR_LIMIT` even with the memory limit raised.
-- **x86-64 only.** See the ARM64 section.
+- `src/parser.s`: x86-64 GLR runtime, arena allocator, and pre-order output emitter.
+- `gen/gen.py`: compiles a tree-sitter `parser.c` into `build/lang_<name>.s` (parse tables, actions, lex modes, reserved words, symbol and field names, lexer state machines, and `TsasmLanguage` descriptor).
+- `tsasm.h`, `tsasm.go`: C header and Go cgo wrapper.
+- `zparser_linux_amd64.s`, `zlang_*_linux_amd64.s`: pre-generated assembly files for `go get`.
+- `test/`: C tree-sitter parity harness (`ref.c`, `check.c`), multi-threaded benchmark (`mtspeed.c`), memory profiler (`memprof.c`), C prototype (`proto.c`), and stress suite (`stress.c`).
+- `fuzz/`: libFuzzer harness (`target.c`), `PROT_NONE` guard-page allocator (`guard.c`), and regression inputs (`regress/`).
+- `scripts/covinstr.py`: assembly basic-block instrumenter for libFuzzer coverage counters.
+- `results/`: raw parity, A/B optimization, retention, and CPU-pinned scaling logs.
